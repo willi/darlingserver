@@ -14,6 +14,9 @@
 int close(int fd);
 int dup(int fd);
 
+// Callers take the errors as Linux errnos; the others returned here have the same numbers in both.
+#define LINUX_EAGAIN 11
+
 struct fileglob {
 	int fd;
 };
@@ -39,7 +42,7 @@ int dtape_fileport_makeport(dtape_task_t* task, int fd, uint32_t* out_name) {
 	fileport = fileport_alloc(fg);
 	if (fileport == IPC_PORT_NULL) {
 		fileport_releasefg(fg);
-		return -EAGAIN;
+		return -LINUX_EAGAIN;
 	}
 
 	// deallocates the port (and so releases the fileglob) on failure
