@@ -24,6 +24,8 @@ struct dtape_task {
 	dtape_mutex_t dyld_info_lock;
 	dtape_condvar_t dyld_info_condvar;
 	struct proc_ident p_ident;
+	// like XNU's p_puniqueid: the eternal ID of the process that forked this one
+	dtape_eternal_id_t parent_eid;
 	struct task xnu_task;
 };
 

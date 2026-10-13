@@ -742,6 +742,23 @@ void DarlingServer::Call::TaskIs64Bit::processCall() {
 	_sendReply(code, is64Bit);
 };
 
+void DarlingServer::Call::ProcIdentity::processCall() {
+	int code = 0;
+	uint64_t uniqueID = 0;
+	uint64_t parentUniqueID = 0;
+	uint32_t pidversion = 0;
+
+	if (auto maybeTargetProcess = processRegistry().lookupEntryByNSID(_body.pid)) {
+		auto targetProcess = *maybeTargetProcess;
+		// HACK: like Uidgid, this reaches into the process's task
+		dtape_task_identity(targetProcess->_dtapeTask, &uniqueID, &parentUniqueID, &pidversion);
+	} else {
+		code = -ESRCH;
+	}
+
+	_sendReply(code, uniqueID, parentUniqueID, pidversion);
+};
+
 void DarlingServer::Call::InterruptEnter::processCall() {
 	Thread::_handleInterruptEnterForCurrentThread();
 

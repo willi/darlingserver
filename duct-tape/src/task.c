@@ -74,6 +74,13 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	task->dyld_info_addr = 0;
 	task->dyld_info_length = 0;
 	task->p_ident.eid = dtape_hooks->task_eternal_id(context);
+	// an exec replaces the task, but not the process, which keeps its parent
+	if (parent_task == NULL)
+		task->parent_eid = 0;
+	else if (parent_task->p_ident.eid == task->p_ident.eid)
+		task->parent_eid = parent_task->parent_eid;
+	else
+		task->parent_eid = parent_task->p_ident.eid;
 	dtape_mutex_init(&task->dyld_info_lock);
 	dtape_condvar_init(&task->dyld_info_condvar);
 	memset(&task->xnu_task, 0, sizeof(task->xnu_task));
@@ -174,6 +181,14 @@ void dtape_task_destroy(dtape_task_t* task) {
 	dtape_hooks->task_context_dispose(task->context);
 
 	free(task);
+};
+
+void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* parent_unique_id, uint32_t* pidversion) {
+	task_lock(&task->xnu_task);
+	*unique_id = task->p_ident.eid;
+	*parent_unique_id = task->parent_eid;
+	*pidversion = task->xnu_task.audit_token.val[7];
+	task_unlock(&task->xnu_task);
 };
 
 void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_uid, int* old_gid) {

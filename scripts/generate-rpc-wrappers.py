@@ -182,6 +182,15 @@ calls = [
 		('is_64_bit', 'bool'),
 	]),
 
+	# what XNU's proc_pidinfo(PROC_PIDUNIQIDENTIFIERINFO) reports, and audit tokens and vouchers agree with
+	('proc_identity', [
+		('pid', 'int32_t'),
+	], [
+		('unique_id', 'uint64_t'),
+		('parent_unique_id', 'uint64_t'),
+		('pidversion', 'uint32_t'),
+	]),
+
 	('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES),
 
 	('interrupt_exit', [], []),
