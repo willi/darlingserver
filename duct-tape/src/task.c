@@ -23,6 +23,8 @@
 
 task_t kernel_task = NULL;
 
+static int next_pidversion;
+
 void dtape_task_init(void) {
 	// this will assign to kernel_task
 	dserver_rpc_architecture_t arch = dserver_rpc_architecture_invalid;
@@ -116,6 +118,9 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	}
 
 	task->xnu_task.audit_token.val[5] = task->saved_pid;
+	// like XNU's p_idversion: a new non-zero value for every fork and exec (both create a new task here).
+	// libxpc refuses to run with an audit token that lacks it.
+	task->xnu_task.audit_token.val[7] = __atomic_add_fetch(&next_pidversion, 1, __ATOMIC_RELAXED);
 
 	if (architecture == dserver_rpc_architecture_x86_64 || architecture == dserver_rpc_architecture_arm64) {
 		task_set_64Bit_addr(&task->xnu_task);
