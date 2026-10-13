@@ -9,6 +9,7 @@
 #include <ipc/ipc_init.h>
 #include <ipc/ipc_pset.h>
 #include <ipc/ipc_space.h>
+#include <ipc/ipc_voucher.h>
 #include <kern/host.h>
 #include <kern/ipc_host.h>
 #include <kern/sync_sema.h>
@@ -33,6 +34,7 @@ void ipc_init(void);
 void mig_init(void);
 void host_notify_init(void);
 void user_data_attr_manager_init(void);
+void bank_init(void);
 void ipc_voucher_init(void);
 
 void dtape_timer_init(void);
@@ -77,6 +79,9 @@ void dtape_init(const dtape_hooks_t* hooks) {
 	dtape_log_debug("ipc_voucher_init");
 	ipc_voucher_init();
 
+	dtape_log_debug("mach_init_activity_id");
+	mach_init_activity_id();
+
 	dtape_log_debug("dtape_task_init");
 	dtape_task_init();
 
@@ -100,6 +105,9 @@ void dtape_init(const dtape_hooks_t* hooks) {
 
 	dtape_log_debug("user_data_attr_manager_init");
 	user_data_attr_manager_init();
+
+	dtape_log_debug("bank_init");
+	bank_init();
 
 	dtape_log_debug("waitq_bootstrap");
 	waitq_bootstrap();

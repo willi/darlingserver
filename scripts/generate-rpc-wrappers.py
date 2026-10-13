@@ -182,6 +182,15 @@ calls = [
 		('is_64_bit', 'bool'),
 	]),
 
+	# what XNU's proc_pidinfo(PROC_PIDUNIQIDENTIFIERINFO) reports, and audit tokens and vouchers agree with
+	('proc_identity', [
+		('pid', 'int32_t'),
+	], [
+		('unique_id', 'uint64_t'),
+		('parent_unique_id', 'uint64_t'),
+		('pidversion', 'uint32_t'),
+	]),
+
 	('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES),
 
 	('interrupt_exit', [], []),
@@ -434,6 +443,26 @@ calls = [
 		('t', 'uint32_t'),
 		('pid', 'int32_t*', 'uint64_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
+
+	('mach_generate_activity_id', [
+		('target', 'uint32_t'),
+		('count', 'int32_t'),
+		('activity_id', 'uint64_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
+
+	('host_create_mach_voucher', [
+		('host', 'uint32_t'),
+		('recipes', 'const uint8_t*', 'uint64_t'),
+		('recipes_size', 'int32_t'),
+		('voucher', 'uint32_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX_ARGS),
+
+	('mach_voucher_extract_attr_recipe', [
+		('voucher_name', 'uint32_t'),
+		('key', 'uint32_t'),
+		('recipe', 'uint8_t*', 'uint64_t'),
+		('recipe_size', 'uint32_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX_ARGS),
 
 	#
 	# Mach VM traps

@@ -22,6 +22,8 @@ struct zone {
 struct kalloc_heap KHEAP_DEFAULT[1];
 // stub
 struct kalloc_heap KHEAP_DATA_BUFFERS[1];
+// stub
+struct kalloc_heap KHEAP_TEMP[1];
 
 // stub
 vm_size_t kalloc_max_prerounded = 0;

@@ -87,11 +87,6 @@ void panic(const char* message, ...) {
 	abort();
 };
 
-kern_return_t bank_get_bank_ledger_thread_group_and_persona(ipc_voucher_t voucher, ledger_t* bankledger, struct thread_group** banktg, uint32_t* persona_id) {
-	dtape_stub();
-	return KERN_FAILURE;
-};
-
 int cpu_number(void) {
 	dtape_stub_safe();
 	return 0;

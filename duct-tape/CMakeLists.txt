@@ -268,6 +268,7 @@ add_library(darlingserver_duct_tape STATIC
 	src/kqchan.c
 	src/semaphore.c
 	src/psynch.c
+	src/bank.c
 	src/condvar.c
 	src/debug.c
 

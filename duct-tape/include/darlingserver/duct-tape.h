@@ -82,6 +82,9 @@ void dtape_thread_sigexc_enter2(dtape_thread_t* thread);
 void dtape_thread_dying(dtape_thread_t* thread);
 
 void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_uid, int* old_gid);
+// the process's unique ID and its parent's (eternal IDs, like XNU's p_uniqueid and p_puniqueid), and the task's
+// pidversion (audit_token.val[7], like XNU's p_idversion)
+void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* parent_unique_id, uint32_t* pidversion);
 void dtape_task_retain(dtape_task_t* task);
 void dtape_task_release(dtape_task_t* task);
 void dtape_task_dying(dtape_task_t* task);
