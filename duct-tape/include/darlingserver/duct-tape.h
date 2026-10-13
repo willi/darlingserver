@@ -85,6 +85,25 @@ void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_ui
 // the process's unique ID and its parent's (eternal IDs, like XNU's p_uniqueid and p_puniqueid), and the task's
 // pidversion (audit_token.val[7], like XNU's p_idversion)
 void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* parent_unique_id, uint32_t* pidversion);
+
+/**
+ * Makes a fileport for the given descriptor in the given task and returns its name in `out_name`. The fileport owns
+ * the descriptor from then on, even when this fails. Returns 0 or a negative errno.
+ */
+int dtape_fileport_makeport(dtape_task_t* task, int fd, uint32_t* out_name);
+
+/**
+ * Returns a new descriptor (of darlingserver's) for the file the given task's fileport stands for, or a negative errno.
+ */
+int dtape_fileport_makefd(dtape_task_t* task, uint32_t name);
+
+/**
+ * Sets the given task's bootstrap port to a send right for the given name in its space, as posix_spawn() applies a
+ * PSPA_SPECIAL port action (exec_handle_port_actions() in XNU's bsd/kern/kern_exec.c); posix_spawn() lends it to the
+ * child this way, and no other special port can be lent (KERN_INVALID_ARGUMENT). Unlike task_set_special_port(), this
+ * takes ports whose rights are immovable: launchd gives its jobs such bootstrap ports. Returns a kern_return_t.
+ */
+int dtape_task_set_special_port_for_spawn(dtape_task_t* task, int which, uint32_t name);
 void dtape_task_retain(dtape_task_t* task);
 void dtape_task_release(dtape_task_t* task);
 void dtape_task_dying(dtape_task_t* task);

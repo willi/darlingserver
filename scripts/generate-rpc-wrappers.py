@@ -191,6 +191,25 @@ calls = [
 		('pidversion', 'uint32_t'),
 	]),
 
+	# fileports: the port stands for the file the descriptor is open on (see duct-tape/src/fileport.c)
+	('fileport_makeport', [
+		('fd', '@fd'),
+	], [
+		('port_name', 'uint32_t'),
+	]),
+
+	('fileport_makefd', [
+		('port_name', 'uint32_t'),
+	], [
+		('fd', '@fd'),
+	]),
+
+	# posix_spawn()'s special port actions (see dtape_task_set_special_port_for_spawn()); the code is a kern_return_t
+	('spawn_set_special_port', [
+		('which', 'int32_t'),
+		('port_name', 'uint32_t'),
+	], []),
+
 	('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES),
 
 	('interrupt_exit', [], []),
