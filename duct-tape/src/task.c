@@ -215,6 +215,11 @@ int dtape_task_set_special_port_for_spawn(dtape_task_t* task, int which, uint32_
 	ipc_port_t port = IP_NULL;
 	kern_return_t kr;
 
+	// the only special port a spawn can lend its child (see libsystem_kernel's posix_spawn)
+	if (which != TASK_BOOTSTRAP_PORT) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
 	if (name == MACH_PORT_DEAD) {
 		port = IP_DEAD;
 	} else if (MACH_PORT_VALID(name)) {
