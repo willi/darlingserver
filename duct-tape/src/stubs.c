@@ -92,10 +92,6 @@ int cpu_number(void) {
 	return 0;
 };
 
-void fileport_releasefg(struct fileglob* fg) {
-	dtape_stub();
-};
-
 void workq_deallocate_safe(struct workqueue* wq) {
 	dtape_stub();
 };

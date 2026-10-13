@@ -191,6 +191,19 @@ calls = [
 		('pidversion', 'uint32_t'),
 	]),
 
+	# fileports: the port stands for the file the descriptor is open on (see duct-tape/src/fileport.c)
+	('fileport_makeport', [
+		('fd', '@fd'),
+	], [
+		('port_name', 'uint32_t'),
+	]),
+
+	('fileport_makefd', [
+		('port_name', 'uint32_t'),
+	], [
+		('fd', '@fd'),
+	]),
+
 	('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES),
 
 	('interrupt_exit', [], []),

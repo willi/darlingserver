@@ -759,6 +759,47 @@ void DarlingServer::Call::ProcIdentity::processCall() {
 	_sendReply(code, uniqueID, parentUniqueID, pidversion);
 };
 
+void DarlingServer::Call::FileportMakeport::processCall() {
+	int code = 0;
+	uint32_t portName = 0;
+
+	if (auto thread = _thread.lock()) {
+		if (auto process = thread->process()) {
+			// the fileport owns the descriptor now
+			code = dtape_fileport_makeport(process->_dtapeTask, _body.fd, &portName);
+			_body.fd = -1;
+		} else {
+			code = -ESRCH;
+		}
+	} else {
+		code = -ESRCH;
+	}
+
+	_sendReply(code, portName);
+};
+
+void DarlingServer::Call::FileportMakefd::processCall() {
+	int code = 0;
+	int fd = -1;
+
+	if (auto thread = _thread.lock()) {
+		if (auto process = thread->process()) {
+			fd = dtape_fileport_makefd(process->_dtapeTask, _body.port_name);
+			if (fd < 0) {
+				code = fd;
+				fd = -1;
+			}
+		} else {
+			code = -ESRCH;
+		}
+	} else {
+		code = -ESRCH;
+	}
+
+	// the reply takes the descriptor
+	_sendReply(code, fd);
+};
+
 void DarlingServer::Call::InterruptEnter::processCall() {
 	Thread::_handleInterruptEnterForCurrentThread();
 
