@@ -122,6 +122,9 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	// libxpc refuses to run with an audit token that lacks it.
 	task->xnu_task.audit_token.val[7] = __atomic_add_fetch(&next_pidversion, 1, __ATOMIC_RELAXED);
 
+	// like XNU's task_create_internal(): the bank context records the task's identity as of now
+	bank_task_initialize(&task->xnu_task);
+
 	if (architecture == dserver_rpc_architecture_x86_64 || architecture == dserver_rpc_architecture_arm64) {
 		task_set_64Bit_addr(&task->xnu_task);
 		task_set_64Bit_data(&task->xnu_task);
@@ -155,6 +158,8 @@ void dtape_task_destroy(dtape_task_t* task) {
 	task_unlock(&task->xnu_task);
 
 	semaphore_destroy_all(&task->xnu_task);
+
+	bank_task_destroy(&task->xnu_task);
 
 	ipc_space_terminate(task->xnu_task.itk_space);
 

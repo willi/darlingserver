@@ -34,6 +34,7 @@ void ipc_init(void);
 void mig_init(void);
 void host_notify_init(void);
 void user_data_attr_manager_init(void);
+void bank_init(void);
 void ipc_voucher_init(void);
 
 void dtape_timer_init(void);
@@ -104,6 +105,9 @@ void dtape_init(const dtape_hooks_t* hooks) {
 
 	dtape_log_debug("user_data_attr_manager_init");
 	user_data_attr_manager_init();
+
+	dtape_log_debug("bank_init");
+	bank_init();
 
 	dtape_log_debug("waitq_bootstrap");
 	waitq_bootstrap();

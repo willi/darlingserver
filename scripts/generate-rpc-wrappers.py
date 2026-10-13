@@ -441,6 +441,20 @@ calls = [
 		('activity_id', 'uint64_t*', 'uint64_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
 
+	('host_create_mach_voucher', [
+		('host', 'uint32_t'),
+		('recipes', 'const uint8_t*', 'uint64_t'),
+		('recipes_size', 'int32_t'),
+		('voucher', 'uint32_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX_ARGS),
+
+	('mach_voucher_extract_attr_recipe', [
+		('voucher_name', 'uint32_t'),
+		('key', 'uint32_t'),
+		('recipe', 'uint8_t*', 'uint64_t'),
+		('recipe_size', 'uint32_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX_ARGS),
+
 	#
 	# Mach VM traps
 	#
