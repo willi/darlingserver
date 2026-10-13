@@ -18,6 +18,8 @@
 #include <mach/mach_traps.h>
 #include <mach/mach_port.h>
 #include <ipc/ipc_hash.h>
+#include <ipc/ipc_object.h>
+#include <ipc/ipc_port.h>
 
 #include <stdlib.h>
 
@@ -206,6 +208,29 @@ void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_ui
 		task->xnu_task.audit_token.val[2] = new_gid;
 	}
 	task_unlock(&task->xnu_task);
+};
+
+int dtape_task_set_special_port_for_spawn(dtape_task_t* task, int which, uint32_t name) {
+	ipc_object_t object = IO_NULL;
+	ipc_port_t port = IP_NULL;
+	kern_return_t kr;
+
+	if (name == MACH_PORT_DEAD) {
+		port = IP_DEAD;
+	} else if (MACH_PORT_VALID(name)) {
+		kr = ipc_object_copyin(task->xnu_task.itk_space, name, MACH_MSG_TYPE_COPY_SEND, &object, 0, NULL, IPC_OBJECT_COPYIN_FLAGS_ALLOW_IMMOVABLE_SEND);
+		if (kr != KERN_SUCCESS) {
+			return kr;
+		}
+		port = ip_object_to_port(object);
+	}
+
+	// consumes the send right when it succeeds
+	kr = task_set_special_port_internal(&task->xnu_task, which, port);
+	if (kr != KERN_SUCCESS && IP_VALID(port)) {
+		ipc_port_release_send(port);
+	}
+	return kr;
 };
 
 void dtape_task_retain(dtape_task_t* task) {

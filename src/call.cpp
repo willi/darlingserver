@@ -800,6 +800,22 @@ void DarlingServer::Call::FileportMakefd::processCall() {
 	_sendReply(code, fd);
 };
 
+void DarlingServer::Call::SpawnSetSpecialPort::processCall() {
+	int code = 0;
+
+	if (auto thread = _thread.lock()) {
+		if (auto process = thread->process()) {
+			code = dtape_task_set_special_port_for_spawn(process->_dtapeTask, _body.which, _body.port_name);
+		} else {
+			code = -ESRCH;
+		}
+	} else {
+		code = -ESRCH;
+	}
+
+	_sendReply(code);
+};
+
 void DarlingServer::Call::InterruptEnter::processCall() {
 	Thread::_handleInterruptEnterForCurrentThread();
 

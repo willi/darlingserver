@@ -204,6 +204,12 @@ calls = [
 		('fd', '@fd'),
 	]),
 
+	# posix_spawn()'s special port actions (see dtape_task_set_special_port_for_spawn()); the code is a kern_return_t
+	('spawn_set_special_port', [
+		('which', 'int32_t'),
+		('port_name', 'uint32_t'),
+	], []),
+
 	('interrupt_enter', [], [], PUSH_UNKNOWN_REPLIES),
 
 	('interrupt_exit', [], []),
