@@ -592,8 +592,69 @@ kern_return_t mach_vm_machine_attribute(vm_map_t map, mach_vm_address_t addr, ma
 	dtape_stub_unsafe();
 };
 
+// Maps anonymous memory only: Darling has no memory objects to map (mach_make_memory_entry() is a stub). Like
+// mach_vm_allocate(), this doesn't keep the mapping's maximum protection, inheritance or purgeability.
 kern_return_t mach_vm_map_external(vm_map_t target_map, mach_vm_offset_t* address, mach_vm_size_t initial_size, mach_vm_offset_t mask, int flags, ipc_port_t port, vm_object_offset_t offset, boolean_t copy, vm_prot_t cur_protection, vm_prot_t max_protection, vm_inherit_t inheritance) {
-	dtape_stub_safe();
+	const uintptr_t page_size = sysconf(_SC_PAGESIZE);
+	uint64_t page_count = dtape_byte_count_to_page_count_round_up(initial_size);
+	uint64_t extra_page_count = 0;
+	dtape_memory_flags_t memory_flags = dtape_memory_flag_none;
+	uintptr_t hint = 0;
+	uintptr_t addr;
+	int prot = 0;
+
+	if (IP_VALID(port)) {
+		return KERN_NOT_SUPPORTED;
+	}
+	if (target_map == kernel_map || page_count == 0) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
+	if (cur_protection & VM_PROT_READ) {
+		prot |= PROT_READ;
+	}
+	if (cur_protection & VM_PROT_WRITE) {
+		prot |= PROT_WRITE;
+	}
+	if (cur_protection & VM_PROT_EXECUTE) {
+		prot |= PROT_EXEC;
+	}
+
+	if (flags & VM_FLAGS_ANYWHERE) {
+		// for an alignment stricter than a page, map enough to hold an aligned range and unmap the rest
+		if (mask & ~(page_size - 1)) {
+			extra_page_count = dtape_byte_count_to_page_count_round_up(mask + 1);
+		}
+	} else {
+		if (*address & mask & ~(page_size - 1)) {
+			return KERN_NO_SPACE;
+		}
+		hint = mach_vm_trunc_page(*address);
+		memory_flags = dtape_memory_flag_fixed;
+		if (flags & VM_FLAGS_OVERWRITE) {
+			memory_flags |= dtape_memory_flag_overwrite;
+		}
+	}
+
+	addr = dtape_hooks->task_allocate_pages(target_map->dtape_task->context, page_count + extra_page_count, prot, hint, memory_flags);
+	if (addr == 0) {
+		return (flags & VM_FLAGS_ANYWHERE) ? KERN_RESOURCE_SHORTAGE : KERN_NO_SPACE;
+	}
+
+	if (extra_page_count > 0) {
+		uintptr_t aligned = (addr + mask) & ~(uintptr_t)mask;
+		uint64_t head_page_count = (aligned - addr) / page_size;
+
+		if (head_page_count > 0) {
+			dtape_hooks->task_free_pages(target_map->dtape_task->context, addr, head_page_count);
+		}
+		if (extra_page_count > head_page_count) {
+			dtape_hooks->task_free_pages(target_map->dtape_task->context, aligned + page_count * page_size, extra_page_count - head_page_count);
+		}
+		addr = aligned;
+	}
+
+	*address = addr;
 	return KERN_SUCCESS;
 };
 
