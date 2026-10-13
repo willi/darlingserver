@@ -435,6 +435,12 @@ calls = [
 		('pid', 'int32_t*', 'uint64_t'),
 	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
 
+	('mach_generate_activity_id', [
+		('target', 'uint32_t'),
+		('count', 'int32_t'),
+		('activity_id', 'uint64_t*', 'uint64_t'),
+	], [], XNU_TRAP_CALL | XNU_TRAP_NOPREFIX | XNU_TRAP_NOSUFFIX),
+
 	#
 	# Mach VM traps
 	#

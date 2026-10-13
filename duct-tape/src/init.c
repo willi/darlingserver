@@ -9,6 +9,7 @@
 #include <ipc/ipc_init.h>
 #include <ipc/ipc_pset.h>
 #include <ipc/ipc_space.h>
+#include <ipc/ipc_voucher.h>
 #include <kern/host.h>
 #include <kern/ipc_host.h>
 #include <kern/sync_sema.h>
@@ -76,6 +77,9 @@ void dtape_init(const dtape_hooks_t* hooks) {
 
 	dtape_log_debug("ipc_voucher_init");
 	ipc_voucher_init();
+
+	dtape_log_debug("mach_init_activity_id");
+	mach_init_activity_id();
 
 	dtape_log_debug("dtape_task_init");
 	dtape_task_init();
