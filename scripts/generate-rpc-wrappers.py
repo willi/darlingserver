@@ -189,6 +189,9 @@ calls = [
 		('unique_id', 'uint64_t'),
 		('parent_unique_id', 'uint64_t'),
 		('pidversion', 'uint32_t'),
+		# the executable's LC_UUID, as recorded at exec
+		('uuid_low', 'uint64_t'),
+		('uuid_high', 'uint64_t'),
 	]),
 
 	# fileports: the port stands for the file the descriptor is open on (see duct-tape/src/fileport.c)
@@ -254,9 +257,12 @@ calls = [
 
 	('s2c_perform', [], []),
 
+	# at exec: the executable's path and its LC_UUID (two halves, in memory order)
 	('set_executable_path', [
 		('buffer', 'const char*', 'uint64_t'),
-		('buffer_size', 'uint64_t')
+		('buffer_size', 'uint64_t'),
+		('uuid_low', 'uint64_t'),
+		('uuid_high', 'uint64_t'),
 	], []),
 
 	('get_executable_path', [

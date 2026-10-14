@@ -747,16 +747,19 @@ void DarlingServer::Call::ProcIdentity::processCall() {
 	uint64_t uniqueID = 0;
 	uint64_t parentUniqueID = 0;
 	uint32_t pidversion = 0;
+	uint64_t uuid[2] = { 0, 0 };
 
 	if (auto maybeTargetProcess = processRegistry().lookupEntryByNSID(_body.pid)) {
 		auto targetProcess = *maybeTargetProcess;
 		// HACK: like Uidgid, this reaches into the process's task
 		dtape_task_identity(targetProcess->_dtapeTask, &uniqueID, &parentUniqueID, &pidversion);
+		auto executableUUID = targetProcess->executableUUID();
+		memcpy(uuid, executableUUID.data(), sizeof(uuid));
 	} else {
 		code = -ESRCH;
 	}
 
-	_sendReply(code, uniqueID, parentUniqueID, pidversion);
+	_sendReply(code, uniqueID, parentUniqueID, pidversion, uuid[0], uuid[1]);
 };
 
 void DarlingServer::Call::FileportMakeport::processCall() {
@@ -1073,7 +1076,10 @@ void DarlingServer::Call::SetExecutablePath::processCall() {
 			if (!process->readMemory((uintptr_t)_body.buffer, tmpstr.data(), _body.buffer_size, &code)) {
 				code = -code;
 			} else {
-				process->setExecutablePath(tmpstr.c_str());
+				std::array<uint8_t, 16> uuid;
+				memcpy(uuid.data(), &_body.uuid_low, sizeof(_body.uuid_low));
+				memcpy(uuid.data() + sizeof(_body.uuid_low), &_body.uuid_high, sizeof(_body.uuid_high));
+				process->setExecutable(tmpstr.c_str(), uuid);
 			}
 		} else {
 			code = -ESRCH;
