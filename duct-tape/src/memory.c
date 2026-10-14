@@ -146,13 +146,36 @@ static void dtape_map_shared_entry_destroy(dtape_map_shared_entry_t* shared_entr
 	free(shared_entry);
 };
 
-static void dtape_map_insert_shared_entry_locked(dtape_map_t* map, dtape_map_shared_entry_t* shared_entry) {
-	RB_INSERT(dtape_map_shared_entry_head, &map->shared_entries, shared_entry);
+/**
+ * Forgets the shared entries that overlap [address, address + size): whatever they recorded there is no longer mapped.
+ */
+static void dtape_map_remove_shared_entries_locked(dtape_map_t* map, uintptr_t address, uint64_t size) {
+	dtape_map_shared_entry_t* entry;
+	dtape_map_shared_entry_t* tmp;
+
+	RB_FOREACH_SAFE(entry, dtape_map_shared_entry_head, &map->shared_entries, tmp) {
+		if (entry->address >= address + size) {
+			break;
+		}
+		if (entry->address + entry->size <= address) {
+			continue;
+		}
+		RB_REMOVE(dtape_map_shared_entry_head, &map->shared_entries, entry);
+		dtape_map_shared_entry_destroy(entry);
+	}
 };
 
+/**
+ * Records a new mapping of a memfd. It replaces whatever the process mapped there before, so the entries it overlaps go:
+ * the process unmaps memory without telling us (Darling's mach_vm_deallocate() of its own memory is a local munmap()),
+ * and the kernel readily reuses the addresses.
+ */
 static void dtape_map_insert_shared_entry(dtape_map_t* map, dtape_map_shared_entry_t* shared_entry) {
 	dtape_mutex_lock(&map->shared_entry_lock);
-	dtape_map_insert_shared_entry_locked(map, shared_entry);
+	dtape_map_remove_shared_entries_locked(map, shared_entry->address, shared_entry->size);
+	if (RB_INSERT(dtape_map_shared_entry_head, &map->shared_entries, shared_entry) != NULL) {
+		panic("shared entry still recorded at %p", (void*)shared_entry->address);
+	}
 	dtape_mutex_unlock(&map->shared_entry_lock);
 };
 
@@ -390,8 +413,8 @@ out:
 	return kr;
 };
 
-// TODO: we should have the process inform us when it unmaps a shared entry that we remapped;
-//       right now, we only close the memfd when the process dies (so the memory is potentially in-use needlessly).
+// TODO: we should have the process inform us when it unmaps a shared entry; right now, its memfd is only closed when the
+//       range is shared or mapped again, or when the process dies (so the memory is potentially in use needlessly).
 
 void dtape_vm_map_destroy(vm_map_t map) {
 	if (os_ref_release(&map->map_refcnt) != 0) {
@@ -710,6 +733,9 @@ kern_return_t vm_map_remove(vm_map_t map, vm_map_offset_t start, vm_map_offset_t
 		if (dtape_hooks->task_free_pages(map->dtape_task->context, start, dtape_byte_count_to_page_count_round_down(end - start)) < 0) {
 			return KERN_FAILURE;
 		}
+		dtape_mutex_lock(&map->shared_entry_lock);
+		dtape_map_remove_shared_entries_locked(map, start, end - start);
+		dtape_mutex_unlock(&map->shared_entry_lock);
 		return KERN_SUCCESS;
 	}
 };
@@ -737,6 +763,10 @@ kern_return_t mach_vm_allocate_kernel(vm_map_t map, mach_vm_offset_t* addr, mach
 // task's memory (MAP_MEM_VM_SHARE, or no MAP_MEM_* flag) moves the range into a memfd, as mach_vm_remap() does; mach_vm_map()
 // maps the memfd. Entries for part of a parent entry and MAP_MEM_ONLY aren't supported; purgeability, ledger tags and
 // MAP_MEM_NAMED_REUSE are ignored.
+// Where this differs from XNU:
+// - A shared range stays shared memory: a fork's child shares it with its parent (MAP_SHARED) instead of getting a copy.
+// - Writes by other threads to a private range while it's being moved into a memfd can be lost (see
+//   dtape_map_share_range()).
 kern_return_t _mach_make_memory_entry(vm_map_t target_map, memory_object_size_t* size, memory_object_offset_t offset, vm_prot_t permission, ipc_port_t* object_handle, ipc_port_t parent_entry) {
 	const uintptr_t page_size = sysconf(_SC_PAGESIZE);
 	kern_return_t kr;
@@ -763,6 +793,9 @@ kern_return_t _mach_make_memory_entry(vm_map_t target_map, memory_object_size_t*
 		if (permission & (MAP_MEM_USE_DATA_ADDR | MAP_MEM_4K_DATA_ADDR)) {
 			return KERN_INVALID_ARGUMENT;
 		}
+		if (*size > ~(uint64_t)(page_size - 1)) {
+			return KERN_INVALID_ARGUMENT;
+		}
 		map_size = mach_vm_round_page(*size);
 		if (map_size == 0) {
 			*size = 0;
@@ -771,7 +804,8 @@ kern_return_t _mach_make_memory_entry(vm_map_t target_map, memory_object_size_t*
 		}
 		kr = dtape_map_shared_descriptor_create_filled(NULL, 0, map_size, &descriptor);
 	} else {
-		if (offset + *size < offset) {
+		// nor may rounding the end up to a page (mach_vm_round_page() panics then)
+		if (offset + *size < offset || offset + *size > ~(uint64_t)(page_size - 1)) {
 			return KERN_INVALID_ARGUMENT;
 		}
 		map_size = mach_vm_round_page(offset + *size) - map_start;
@@ -829,16 +863,23 @@ kern_return_t _mach_make_memory_entry(vm_map_t target_map, memory_object_size_t*
 	return KERN_SUCCESS;
 };
 
+// Memory entries are plain memfd pages: Darling has no access tracking, ledgers or purgeable memory to report on.
+
 kern_return_t mach_memory_entry_access_tracking(ipc_port_t entry_port, int* access_tracking, uint32_t* access_tracking_reads, uint32_t* access_tracking_writes) {
-	dtape_stub_unsafe();
+	dtape_stub_safe();
+	return KERN_NOT_SUPPORTED;
 };
 
 kern_return_t mach_memory_entry_ownership(ipc_port_t entry_port, task_t owner, int ledger_tag, int ledger_flags) {
-	dtape_stub_unsafe();
+	// the memory isn't charged to any task's ledger anyway
+	dtape_stub_safe();
+	return KERN_SUCCESS;
 };
 
 kern_return_t mach_memory_entry_purgable_control(ipc_port_t entry_port, vm_purgable_t control, int* state) {
-	dtape_stub_unsafe();
+	// as XNU answers for an entry whose memory isn't purgeable
+	dtape_stub_safe();
+	return KERN_INVALID_ARGUMENT;
 };
 
 kern_return_t mach_memory_info(host_priv_t host, mach_zone_name_array_t* namesp, mach_msg_type_number_t* namesCntp, mach_zone_info_array_t* infop, mach_msg_type_number_t* infoCntp, mach_memory_info_array_t* memoryInfop, mach_msg_type_number_t* memoryInfoCntp) {
@@ -1011,10 +1052,33 @@ kern_return_t mach_vm_map_external(vm_map_t target_map, mach_vm_offset_t* addres
 			if (kr == KERN_SUCCESS && !dtape_hooks->task_change_protection(target_map->dtape_task->context, addr, page_count, prot)) {
 				kr = KERN_FAILURE;
 			}
-		} else if (dtape_hooks->task_map_file(target_map->dtape_task->context, descriptor->memfd, page_count, prot, addr, entry_page_offset, dtape_memory_flag_fixed | dtape_memory_flag_overwrite) != addr) {
-			kr = KERN_FAILURE;
 		} else {
-			kr = dtape_map_record_shared(target_map, addr, page_count * page_size, entry_page_offset, descriptor);
+			int memfd = descriptor->memfd;
+			int read_only_memfd = -1;
+
+			// Darling's mach_vm_protect() doesn't keep the maximum protection, so without write in it, the mapping is of a
+			// read-only descriptor, which no mprotect() can make writable (a read-only entry's receiver can't write to its
+			// sender's memory)
+			if (!(max_protection & VM_PROT_WRITE)) {
+				char path[64];
+
+				snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor->memfd);
+				read_only_memfd = open(path, O_RDONLY | O_CLOEXEC);
+				if (read_only_memfd < 0) {
+					kr = KERN_RESOURCE_SHORTAGE;
+				}
+				memfd = read_only_memfd;
+			}
+
+			if (kr == KERN_SUCCESS && dtape_hooks->task_map_file(target_map->dtape_task->context, memfd, page_count, prot, addr, entry_page_offset, dtape_memory_flag_fixed | dtape_memory_flag_overwrite) != addr) {
+				kr = KERN_FAILURE;
+			}
+			if (kr == KERN_SUCCESS) {
+				kr = dtape_map_record_shared(target_map, addr, page_count * page_size, entry_page_offset, descriptor);
+			}
+			if (read_only_memfd >= 0) {
+				close(read_only_memfd);
+			}
 		}
 
 		if (kr != KERN_SUCCESS) {
