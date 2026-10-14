@@ -712,8 +712,6 @@ void DarlingServer::Process::notifyDead() {
 	// TODO: get exit status
 	_notifyListeningKqchannels(NOTE_EXIT, 0);
 
-	dtape_task_dying(_dtapeTask);
-
 	// notify all our threads that we're dead
 	for (auto [id, maybeThread]: threads) {
 		auto thread = maybeThread.lock();
@@ -723,10 +721,13 @@ void DarlingServer::Process::notifyDead() {
 		thread->notifyDead();
 	}
 
-	// schedule the duct-taped task to be released
-	// dtape_thread_release needs a microthread context, so we call it within a kernel microthread
+	// schedule the duct-taped task to be terminated and released
+	// these need a microthread context, so we call them within a kernel microthread
 	// also destroy the fork-wait semaphore here
 	Thread::kernelAsync([self = shared_from_this()]() {
+		// its threads are dead; terminate the task's IPC now, even if something still holds a reference to it
+		dtape_task_dying(self->_dtapeTask);
+
 		if (self->_dtapeForkWaitSemaphore) {
 			dtape_semaphore_destroy(self->_dtapeForkWaitSemaphore);
 			self->_dtapeForkWaitSemaphore = nullptr;
