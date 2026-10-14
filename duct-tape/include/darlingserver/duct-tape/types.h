@@ -49,6 +49,9 @@ typedef struct dtape_memory_region_info {
 	uint64_t map_offset;
 	dtape_memory_protection_t protection;
 	bool shared;
+	// the mapped file's device and inode (both 0 for anonymous memory)
+	uint64_t device;
+	uint64_t inode;
 } dtape_memory_region_info_t;
 
 typedef enum dtape_memory_flags {

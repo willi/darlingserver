@@ -81,6 +81,8 @@ namespace DarlingServer {
 			int protection;
 			uint64_t mapOffset;
 			bool shared;
+			uint64_t device;
+			uint64_t inode;
 		};
 
 	private:

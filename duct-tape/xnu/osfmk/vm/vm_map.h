@@ -198,6 +198,10 @@ struct vm_named_entry {
 	/* boolean_t */ internal:1,              /* ... an internal object */
 	/* boolean_t */ is_sub_map:1,           /* ... a submap? */
 	/* boolean_t */ is_copy:1;              /* ... a VM map copy */
+#ifdef __DARLING__
+	// Darling's entries are none of those: each one is a range of a memfd (see _mach_make_memory_entry())
+	struct dtape_map_shared_descriptor* dtape_descriptor;
+#endif // __DARLING__
 #if VM_NAMED_ENTRY_LIST
 	queue_chain_t           named_entry_list;
 	int                     named_entry_alias;
