@@ -161,6 +161,8 @@ void dtape_task_destroy(dtape_task_t* task) {
 
 	// this next section uses code adapted from XNU's task_deallocate() in osfmk/kern/task.c
 
+	// a task replaced by an exec is still active; a dead process's was terminated by dtape_task_dying() (both are
+	// harmless twice)
 	task_lock(&task->xnu_task);
 	task->xnu_task.active = false;
 	ipc_task_disable(&task->xnu_task);
@@ -247,7 +249,15 @@ void dtape_task_release(dtape_task_t* task) {
 };
 
 void dtape_task_dying(dtape_task_t* task) {
-	// nothing for now
+	// As XNU's task_terminate_internal() does when a process exits: its port rights die with it, not when the last
+	// reference to the task goes. Among other things, that sends the port-destroyed notifications for its receive
+	// rights, which is how launchd gets a dead job's Mach services back.
+	task_lock(&task->xnu_task);
+	task->xnu_task.active = false;
+	ipc_task_disable(&task->xnu_task);
+	task_unlock(&task->xnu_task);
+
+	ipc_space_terminate(task->xnu_task.itk_space);
 };
 
 void dtape_task_set_dyld_info(dtape_task_t* task, uint64_t address, uint64_t length) {
