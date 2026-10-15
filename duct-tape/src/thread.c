@@ -162,15 +162,18 @@ void dtape_thread_destroy(dtape_thread_t* thread) {
 	free(thread);
 };
 
+// `state` is changed atomically here and in thread_unblock(), which another OS thread runs while this one enters or
+// exits: a plain read-modify-write could undo its update (bringing TH_WAIT back). The thread lock can't be taken here:
+// our callers hold the thread's _rwlock, which thread_unblock() takes (to resume us) with the thread lock held.
 void dtape_thread_entering(dtape_thread_t* thread) {
 	// if the thread is entering, it cannot be waiting
-	thread->xnu_thread.state &= ~(TH_WAIT | TH_UNINT);
-	thread->xnu_thread.state |= TH_RUN;
+	__atomic_and_fetch(&thread->xnu_thread.state, ~(TH_WAIT | TH_UNINT), __ATOMIC_SEQ_CST);
+	__atomic_or_fetch(&thread->xnu_thread.state, TH_RUN, __ATOMIC_SEQ_CST);
 	thread->xnu_thread.block_hint = kThreadWaitNone;
 };
 
 void dtape_thread_exiting(dtape_thread_t* thread) {
-	thread->xnu_thread.state &= ~TH_RUN;
+	__atomic_and_fetch(&thread->xnu_thread.state, ~TH_RUN, __ATOMIC_SEQ_CST);
 };
 
 void dtape_thread_set_handles(dtape_thread_t* thread, uintptr_t pthread_handle, uintptr_t dispatch_qaddr) {
@@ -565,8 +568,9 @@ boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
 		thread->xnu_thread.wait_timer_is_set = FALSE;
 	}
 	// as XNU does: the wait is over, so a thread_block() that hasn't checked TH_WAIT yet must not suspend
-	thread->xnu_thread.state &= ~(TH_WAIT | TH_UNINT);
-	thread->xnu_thread.state |= TH_RUN;
+	// (atomically: see dtape_thread_entering())
+	__atomic_and_fetch(&thread->xnu_thread.state, ~(TH_WAIT | TH_UNINT), __ATOMIC_SEQ_CST);
+	__atomic_or_fetch(&thread->xnu_thread.state, TH_RUN, __ATOMIC_SEQ_CST);
 	libsimple_lock_lock(&thread->wake_lock);
 	dtape_hooks->thread_resume(thread->context);
 	libsimple_lock_unlock(&thread->wake_lock);
