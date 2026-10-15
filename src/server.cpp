@@ -606,6 +606,10 @@ void DarlingServer::Server::start() {
 					continue;
 				}
 
+				// the timerfd is disarmed now, so forget its deadline: otherwise, until dtape_timer_fired() re-arms it, every
+				// arm for a later deadline is skipped, and a timer callout that waits (e.g. for a lock) delays them all
+				_currentTimerDeadline = 0;
+
 				// we're done handling the timerfd;
 				// we don't need to lock anymore (and the following call might need to arm the timer again)
 				lock.unlock();
