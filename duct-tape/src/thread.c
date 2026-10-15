@@ -53,6 +53,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
 	thread->processing_signal = false;
 	thread->name = NULL;
 	thread->waiting_suspended = false;
+	libsimple_lock_init(&thread->wake_lock);
 	LIST_INIT(&thread->user_states);
 	dtape_mutex_init(&thread->suspension_mutex);
 	dtape_condvar_init(&thread->suspension_condvar);
@@ -522,10 +523,17 @@ wait_result_t thread_block_parameter(thread_continue_t continuation, void* param
 
 	bool waiting = thread->xnu_thread.state & TH_WAIT;
 
+	// a thread_unblock() from another OS thread after we unlock but before we've suspended would find us not suspended
+	// yet, and its resume would do nothing: we'd sleep through our wakeup. So take the wake lock, which thread_unblock()
+	// resumes under, before unlocking, and have the suspension release it once we're suspended.
+	if (waiting) {
+		libsimple_lock_lock(&thread->wake_lock);
+	}
+
 	thread_unlock(&thread->xnu_thread);
 
 	if (waiting) {
-		dtape_hooks->thread_suspend(thread->context, continuation ? thread_continuation_callback : NULL, thread, NULL);
+		dtape_hooks->thread_suspend(thread->context, continuation ? thread_continuation_callback : NULL, thread, &thread->wake_lock);
 	}
 
 	thread_lock(&thread->xnu_thread);
@@ -549,7 +557,19 @@ wait_result_t thread_block(thread_continue_t continuation) {
 boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
 	thread->xnu_thread.wait_result = wresult;
+	// as XNU does: a timed wait that ended otherwise must not time out a later wait
+	if (thread->xnu_thread.wait_timer_is_set) {
+		if (timer_call_cancel(&thread->xnu_thread.wait_timer)) {
+			thread->xnu_thread.wait_timer_active--;
+		}
+		thread->xnu_thread.wait_timer_is_set = FALSE;
+	}
+	// as XNU does: the wait is over, so a thread_block() that hasn't checked TH_WAIT yet must not suspend
+	thread->xnu_thread.state &= ~(TH_WAIT | TH_UNINT);
+	thread->xnu_thread.state |= TH_RUN;
+	libsimple_lock_lock(&thread->wake_lock);
 	dtape_hooks->thread_resume(thread->context);
+	libsimple_lock_unlock(&thread->wake_lock);
 	return TRUE;
 };
 

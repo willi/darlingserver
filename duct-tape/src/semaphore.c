@@ -49,12 +49,13 @@ dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore)
 };
 
 bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore) {
-	switch (dtape_semaphore_down(semaphore)) {
-		case dtape_semaphore_wait_result_ok:
+	kern_return_t kr = semaphore_wait(semaphore->xnu_semaphore);
+	switch (kr) {
+		case KERN_SUCCESS:
 			return true;
-		case dtape_semaphore_wait_result_interrupted:
+		case KERN_ABORTED:
 			return false;
 		default:
-			panic("Failed to lower up-count of duct-taped XNU semaphore");
+			panic("Failed to lower up-count of duct-taped XNU semaphore: %d", kr);
 	}
 };

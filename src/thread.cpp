@@ -854,7 +854,10 @@ void DarlingServer::Thread::kernelAsync(std::function<void()> fn) {
 
 	libsimple_lock_lock(&kernelAsyncRunnerQueueLock);
 	kernelAsyncRunnerQueue.push(fn);
-	if (kernelAsyncRunnersAvailable == 0) {
+	// an available runner stays counted until it takes a job, so compare against the queued jobs, not 0: with one
+	// runner available and two jobs queued, the second job would otherwise wait for the first to finish, forever if
+	// the first waits on the second
+	if (kernelAsyncRunnerQueue.size() > kernelAsyncRunnersAvailable) {
 		// we need to get some work done, but there are no workers available.
 		// if we have less workers than the max permanent number of workers,
 		// let's spawn a permanent worker. otherwise, just spawn a temporary worker.
