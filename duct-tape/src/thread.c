@@ -1289,6 +1289,11 @@ kern_return_t thread_info(thread_t xthread, thread_flavor_t flavor, thread_info_
 			}
 			dtape_mutex_unlock(&thread->suspension_mutex);
 
+			// the calling thread is running, though Linux sees it waiting for our reply
+			if (thread_state == -1 && xthread == current_thread()) {
+				thread_state = dtape_thread_state_running;
+			}
+
 			if (thread_state == -1) {
 				thread_state = dtape_hooks->thread_get_state(thread->context);
 			}
@@ -1316,8 +1321,66 @@ kern_return_t thread_info(thread_t xthread, thread_flavor_t flavor, thread_info_
 			return KERN_SUCCESS;
 		};
 
+		// threads are scheduled by Linux: report them as XNU's default, time-shared at the default priority
+		case THREAD_SCHED_TIMESHARE_INFO: {
+			if (*thread_info_count < POLICY_TIMESHARE_INFO_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			*thread_info_count = POLICY_TIMESHARE_INFO_COUNT;
+
+			policy_timeshare_info_t info = (policy_timeshare_info_t)thread_info_out;
+			info->max_priority = MAXPRI_USER;
+			info->base_priority = BASEPRI_DEFAULT;
+			info->cur_priority = BASEPRI_DEFAULT;
+			info->depressed = FALSE;
+			info->depress_priority = -1;
+			return KERN_SUCCESS;
+		};
+
+		case THREAD_SCHED_FIFO_INFO: {
+			if (*thread_info_count < POLICY_FIFO_INFO_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			return KERN_INVALID_POLICY;
+		};
+
+		case THREAD_SCHED_RR_INFO: {
+			if (*thread_info_count < POLICY_RR_INFO_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			return KERN_INVALID_POLICY;
+		};
+
+		case THREAD_EXTENDED_INFO: {
+			thread_basic_info_data_t basic;
+			mach_msg_type_number_t basic_count = THREAD_BASIC_INFO_COUNT;
+			kern_return_t kr;
+
+			if (*thread_info_count < THREAD_EXTENDED_INFO_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			kr = thread_info(xthread, THREAD_BASIC_INFO, (thread_info_t)&basic, &basic_count);
+			if (kr != KERN_SUCCESS) {
+				return kr;
+			}
+			*thread_info_count = THREAD_EXTENDED_INFO_COUNT;
+
+			thread_extended_info_t info = (thread_extended_info_t)thread_info_out;
+			memset(info, 0, sizeof(*info));
+			info->pth_cpu_usage = basic.cpu_usage;
+			info->pth_policy = basic.policy;
+			info->pth_run_state = basic.run_state;
+			info->pth_flags = basic.flags;
+			info->pth_sleep_time = basic.sleep_time;
+			info->pth_curpri = BASEPRI_DEFAULT;
+			info->pth_priority = BASEPRI_DEFAULT;
+			info->pth_maxpriority = MAXPRI_USER;
+			return KERN_SUCCESS;
+		};
+
+		// as XNU: a flavor it doesn't know is an invalid argument
 		default:
-			dtape_stub_unsafe("Unimplemented flavor");
+			return KERN_INVALID_ARGUMENT;
 	}
 };
 
@@ -1326,8 +1389,90 @@ kern_return_t thread_policy(thread_t thread, policy_t policy, policy_base_t base
 	return KERN_SUCCESS;
 };
 
+// threads are scheduled by Linux: every policy is XNU's default for a time-shared thread
 kern_return_t thread_policy_get(thread_t thread, thread_policy_flavor_t flavor, thread_policy_t policy_info, mach_msg_type_number_t* count, boolean_t* get_default) {
-	dtape_stub_unsafe();
+	if (thread == THREAD_NULL) {
+		return KERN_INVALID_ARGUMENT;
+	}
+
+	switch (flavor) {
+		case THREAD_EXTENDED_POLICY: {
+			if (*count < THREAD_EXTENDED_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			((thread_extended_policy_t)policy_info)->timeshare = TRUE;
+			*count = THREAD_EXTENDED_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_TIME_CONSTRAINT_POLICY: {
+			if (*count < THREAD_TIME_CONSTRAINT_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			thread_time_constraint_policy_t info = (thread_time_constraint_policy_t)policy_info;
+			// XNU's defaults: half a 10 ms quantum to compute in, a whole one to finish by (Darling's absolute
+			// time is in nanoseconds)
+			info->period = 0;
+			info->computation = 5 * NSEC_PER_MSEC;
+			info->constraint = 10 * NSEC_PER_MSEC;
+			info->preemptible = TRUE;
+			*count = THREAD_TIME_CONSTRAINT_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_PRECEDENCE_POLICY: {
+			if (*count < THREAD_PRECEDENCE_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			((thread_precedence_policy_t)policy_info)->importance = 0;
+			*count = THREAD_PRECEDENCE_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_AFFINITY_POLICY: {
+			if (*count < THREAD_AFFINITY_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			((thread_affinity_policy_t)policy_info)->affinity_tag = THREAD_AFFINITY_TAG_NULL;
+			*count = THREAD_AFFINITY_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_LATENCY_QOS_POLICY: {
+			if (*count < THREAD_LATENCY_QOS_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			((thread_latency_qos_policy_t)policy_info)->thread_latency_qos_tier = LATENCY_QOS_TIER_UNSPECIFIED;
+			*count = THREAD_LATENCY_QOS_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_THROUGHPUT_QOS_POLICY: {
+			if (*count < THREAD_THROUGHPUT_QOS_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			((thread_throughput_qos_policy_t)policy_info)->thread_throughput_qos_tier = THROUGHPUT_QOS_TIER_UNSPECIFIED;
+			*count = THREAD_THROUGHPUT_QOS_POLICY_COUNT;
+			break;
+		};
+
+		case THREAD_QOS_POLICY: {
+			if (*count < THREAD_QOS_POLICY_COUNT) {
+				return KERN_INVALID_ARGUMENT;
+			}
+			thread_qos_policy_t info = (thread_qos_policy_t)policy_info;
+			info->qos_tier = THREAD_QOS_UNSPECIFIED;
+			info->tier_importance = 0;
+			*count = THREAD_QOS_POLICY_COUNT;
+			break;
+		};
+
+		default:
+			return KERN_INVALID_ARGUMENT;
+	}
+
+	*get_default = TRUE;
+	return KERN_SUCCESS;
 };
 
 kern_return_t thread_policy_set(thread_t thread, thread_policy_flavor_t flavor, thread_policy_t policy_info, mach_msg_type_number_t count) {
