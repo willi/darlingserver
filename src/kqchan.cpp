@@ -321,6 +321,15 @@ void DarlingServer::Kqchan::MachPort::_modify(uint64_t receiveBuffer, uint64_t r
 
 	auto thread = *maybeThread;
 
+	{
+		// A notification our peer received while it waited for this reply, it skipped (it can't tell it from one sent
+		// before the request). So, as for a read, let a new one be sent, but only after the reply: with the reply,
+		// we check for events again (`_checkForEventsAsyncFactory`), so the skipped notification is sent anew.
+		std::unique_lock lock(_notificationMutex);
+		_canSendNotification = true;
+		_deferNotification = true;
+	}
+
 	auto self = shared_from_this();
 	Thread::kernelAsync([self, thread, receiveBuffer, receiveBufferSize, savedFilterFlags]() {
 		kqchanMachPortLog.debug() << *self << ": Handling modification request in microthread" << kqchanMachPortLog.endLog;
@@ -339,6 +348,9 @@ void DarlingServer::Kqchan::MachPort::_modify(uint64_t receiveBuffer, uint64_t r
 		kqchanMachPortLog.debug() << *self << ": Sending modification reply/acknowledgement" << kqchanMachPortLog.endLog;
 
 		self->_outbox.push(std::move(msg));
+
+		// now let's send any deferred notifications we might have
+		self->_sendDeferredNotification();
 	});
 };
 
