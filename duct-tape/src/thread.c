@@ -1269,7 +1269,8 @@ kern_return_t thread_info(thread_t xthread, thread_flavor_t flavor, thread_info_
 			// TODO: fill in these values properly
 			info->cpu_usage = 0;
 			info->flags = 0;
-			info->policy = 0;
+			// scheduled by Linux: a time-shared thread to XNU, as thread_policy_get() and the extended info say
+			info->policy = POLICY_TIMESHARE;
 			info->sleep_time = 0;
 			info->system_time.seconds = 0;
 			info->system_time.microseconds = 0;
