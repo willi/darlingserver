@@ -221,15 +221,20 @@ DarlingServer::Kqchan::MachPort::~MachPort() {
 	if (_dtapeKqchan) {
 		auto kqchan = _dtapeKqchan;
 
-		// disable notifications so that `this` won't be used after we're destroyed
+		// disable notifications; a notifier already past that check finds our weak reference expired
 		dtape_kqchan_mach_port_disable_notifications(kqchan);
 
-		// and schedule the duct-taped kqchan to be destroyed on a microthread
+		// and schedule the duct-taped kqchan to be destroyed on a microthread; no notifier runs once it's gone, so the
+		// notification context can go with it
 		auto debugID = _debugID;
+		auto notifyContext = _notifyContext;
 		Thread::kernelAsync([=]() {
 			kqchanMachPortLog.debug() << "Destroying duct-taped Mach port kqchan with ID " << debugID << kqchanMachPortLog.endLog;
 			dtape_kqchan_mach_port_destroy(kqchan);
+			delete notifyContext;
 		});
+	} else {
+		delete _notifyContext;
 	}
 };
 
@@ -250,13 +255,14 @@ int DarlingServer::Kqchan::MachPort::setup() {
 
 	kqchanMachPortLog.debug() << *this << ": Setting up Mach port kqchan" << kqchanMachPortLog.endLog;
 
-	// NOTE: the duct-taped kqchan will never notify us after we die
-	//       since we disable notifications upon destruction,
-	//       so using `this` here is safe
+	// a notifier can race our destruction (it may have loaded the callback before we disabled notifications), so it
+	// gets a weak reference to us rather than `this`
+	_notifyContext = new std::weak_ptr<MachPort>(weak_from_this());
 	_dtapeKqchan = dtape_kqchan_mach_port_create(proc->_dtapeTask, _port, _receiveBuffer, _receiveBufferSize, _savedFilterFlags, [](void* context) {
-		auto self = reinterpret_cast<MachPort*>(context);
-		self->_notify();
-	}, this);
+		if (auto self = reinterpret_cast<std::weak_ptr<MachPort>*>(context)->lock()) {
+			self->_notify();
+		}
+	}, _notifyContext);
 	if (!_dtapeKqchan) {
 		kqchanMachPortLog.debug() << *this << ": Failed to create duct-taped Mach port kqchan for port " << _port << kqchanMachPortLog.endLog;
 		throw std::system_error(ESRCH, std::generic_category());
