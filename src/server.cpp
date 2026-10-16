@@ -202,6 +202,10 @@ struct DTapeHooks {
 
 	static int dtape_hook_thread_send_signal(void* thread_context, int signal) {
 		try {
+			// a dead thread can't take the signal; sendSignal() would drop it silently
+			if (static_cast<DarlingServer::Thread*>(thread_context)->isDead()) {
+				return -ESRCH;
+			}
 			static_cast<DarlingServer::Thread*>(thread_context)->sendSignal(signal);
 			return 0;
 		} catch (std::system_error e) {

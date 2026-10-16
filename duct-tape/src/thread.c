@@ -1520,7 +1520,9 @@ static wait_result_t thread_handoff_internal(thread_t thread, thread_continue_t 
 	return thread_block_parameter(continuation, parameter);
 };
 
-void thread_hold(thread_t xthread) {
+// Holds `xthread`; answers false, holding nothing, when its Linux thread is gone (it exited without darlingserver
+// noticing yet): nothing would ever acknowledge the suspension, and thread_wait() would wait for ever.
+static bool dtape_thread_hold(thread_t xthread) {
 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
 	dtape_log_debug("sigexc: thread_hold(%p)\n", xthread);
 	// CHECKME: the LKM was always sending the signal whenever thread_hold got called;
@@ -1528,8 +1530,16 @@ void thread_hold(thread_t xthread) {
 	if (xthread->suspend_count++ == 0) {
 		// This signal leads to sigexc.c which will end up calling darlingserver;
 		// darlingserver will hold the caller so long as the suspend_count > 0.
-		dtape_hooks->thread_send_signal(thread->context, LINUX_SIGRTMIN);
+		if (dtape_hooks->thread_send_signal(thread->context, LINUX_SIGRTMIN) == -ESRCH) {
+			xthread->suspend_count--;
+			return false;
+		}
 	}
+	return true;
+};
+
+void thread_hold(thread_t xthread) {
+	(void)dtape_thread_hold(xthread);
 };
 
 void thread_release(thread_t xthread) {
@@ -2128,7 +2138,15 @@ thread_suspend(thread_t thread)
 
 	if (thread->active) {
 		if (thread->user_stop_count++ == 0) {
+#ifdef __DARLING__
+			// a thread whose Linux thread is gone is as good as terminated
+			if (!dtape_thread_hold(thread)) {
+				thread->user_stop_count--;
+				result = KERN_TERMINATED;
+			}
+#else
 			thread_hold(thread);
+#endif
 		}
 	} else {
 		result = KERN_TERMINATED;
