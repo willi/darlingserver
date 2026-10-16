@@ -287,6 +287,8 @@ struct DTapeHooks {
 			memory_region_info->map_offset = info.mapOffset;
 			protection = info.protection;
 			memory_region_info->shared = info.shared;
+			memory_region_info->device = info.device;
+			memory_region_info->inode = info.inode;
 		} catch (...) {
 			return false;
 		}

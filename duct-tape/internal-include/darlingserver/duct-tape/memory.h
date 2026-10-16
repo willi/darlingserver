@@ -22,6 +22,9 @@ typedef struct dtape_map_shared_entry {
 	uint64_t size;
 	uint64_t page_offset;
 	dtape_map_shared_descriptor_t* descriptor;
+	// the memfd as /proc/<pid>/maps shows it, to tell whether the range still maps it
+	uint64_t device;
+	uint64_t inode;
 } dtape_map_shared_entry_t;
 
 typedef RB_HEAD(dtape_map_shared_entry_head, dtape_map_shared_entry) dtape_map_shared_entry_head_t;

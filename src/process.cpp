@@ -80,6 +80,10 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
 
 		// inherit groups from parent process
 		_groups = parentProcess->_groups;
+
+		// a fork runs its parent's executable until it execs
+		_executablePath = parentProcess->_executablePath;
+		_executableUUID = parentProcess->_executableUUID;
 	}
 
 	// NOTE: see thread.cpp for why it's okay to use `this` here
@@ -465,7 +469,7 @@ DarlingServer::Process::MemoryInfo DarlingServer::Process::memoryInfo() const {
 	return info;
 };
 
-static const std::regex memoryRegionEntryRegex("([0-9a-fA-F]+)\\-([0-9a-fA-F]+)\\s+((?:r|w|x|p|s|\\-)+)\\s+([0-9a-fA-F]+)");
+static const std::regex memoryRegionEntryRegex("([0-9a-fA-F]+)\\-([0-9a-fA-F]+)\\s+((?:r|w|x|p|s|\\-)+)\\s+([0-9a-fA-F]+)\\s+([0-9a-fA-F]+):([0-9a-fA-F]+)\\s+([0-9]+)");
 
 DarlingServer::Process::MemoryRegionInfo DarlingServer::Process::memoryRegionInfo(uintptr_t address) const {
 	if (isDead()) {
@@ -512,6 +516,8 @@ DarlingServer::Process::MemoryRegionInfo DarlingServer::Process::memoryRegionInf
 		}
 
 		info.shared = perms.find('s') != std::string::npos;
+		info.device = (std::stoull(match[5].str(), nullptr, 16) << 32) | std::stoull(match[6].str(), nullptr, 16);
+		info.inode = std::stoull(match[7].str());
 
 		return info;
 	}
@@ -602,9 +608,15 @@ std::string DarlingServer::Process::executablePath() const {
 	return _executablePath;
 };
 
-void DarlingServer::Process::setExecutablePath(std::string path) {
+std::array<uint8_t, 16> DarlingServer::Process::executableUUID() const {
+	std::shared_lock lock(_rwlock);
+	return _executableUUID;
+};
+
+void DarlingServer::Process::setExecutable(std::string path, const std::array<uint8_t, 16>& uuid) {
 	std::unique_lock lock(_rwlock);
 	_executablePath = std::move(path);
+	_executableUUID = uuid;
 };
 
 uintptr_t DarlingServer::Process::allocatePages(size_t pageCount, int protection, uintptr_t addressHint, bool fixed, bool overwrite) {

@@ -21,6 +21,7 @@
 #define _DARLINGSERVER_PROCESS_HPP_
 
 #include <sys/types.h>
+#include <array>
 #include <memory>
 #include <vector>
 #include <mutex>
@@ -81,6 +82,8 @@ namespace DarlingServer {
 			int protection;
 			uint64_t mapOffset;
 			bool shared;
+			uint64_t device;
+			uint64_t inode;
 		};
 
 	private:
@@ -102,6 +105,7 @@ namespace DarlingServer {
 		Architecture _architecture;
 		std::weak_ptr<Process> _tracerProcess;
 		std::string _executablePath;
+		std::array<uint8_t, 16> _executableUUID {};
 		bool _dead = false;
 		std::shared_ptr<Process> _selfReference = nullptr;
 		std::vector<uint32_t> _groups;
@@ -192,7 +196,9 @@ namespace DarlingServer {
 		bool setTracerProcess(std::shared_ptr<Process> tracerProcess);
 
 		std::string executablePath() const;
-		void setExecutablePath(std::string path);
+		// the executable's LC_UUID, all zeroes if it has none
+		std::array<uint8_t, 16> executableUUID() const;
+		void setExecutable(std::string path, const std::array<uint8_t, 16>& uuid);
 
 		uintptr_t allocatePages(size_t pageCount, int protection, uintptr_t addressHint, bool fixed, bool overwrite);
 		void freePages(uintptr_t address, size_t pageCount);
