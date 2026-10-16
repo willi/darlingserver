@@ -70,9 +70,19 @@ void dtape_kqchan_mach_port_modify(dtape_kqchan_mach_port_t* kqchan, uint64_t re
 	filt_machporttouch(&kqchan->knote, &kev);
 };
 
+// Notifiers load the callback once and skip a NULL one; the context stays, so a notifier that loaded the callback just
+// before this still has a context to pass it. That context must outlive such a notifier: the server's is a weak
+// reference, freed only after dtape_kqchan_mach_port_destroy().
+static void kqchan_notify(dtape_kqchan_mach_port_t* kqchan) {
+	dtape_kqchan_mach_port_notification_callback_f callback = __atomic_load_n(&kqchan->callback, __ATOMIC_ACQUIRE);
+
+	if (callback) {
+		callback(kqchan->context);
+	}
+};
+
 void dtape_kqchan_mach_port_disable_notifications(dtape_kqchan_mach_port_t* kqchan) {
-	kqchan->callback = NULL;
-	kqchan->context = NULL;
+	__atomic_store_n(&kqchan->callback, NULL, __ATOMIC_RELEASE);
 };
 
 bool dtape_kqchan_mach_port_fill(dtape_kqchan_mach_port_t* kqchan, dserver_kqchan_reply_mach_port_read_t* reply, uint64_t default_buffer, uint64_t default_buffer_size) {
@@ -136,21 +146,9 @@ kevent_ctx_t kevent_get_context(thread_t xthread) {
 static void knote_post(struct knote* kn, long hint) {
 	dtape_kqchan_mach_port_t* kqchan = __container_of(kn, dtape_kqchan_mach_port_t, knote);
 
-	dtape_log_debug("%s: kn=%p, kqchan=%p, kqchan->callback=%p", __FUNCTION__, kn, kqchan, kqchan->callback);
-
-	if (!kqchan->callback) {
-		return;
-	}
-
-#if 0
-	if (!dtape_kqchan_mach_port_has_events(kqchan)) {
-		return;
-	}
-#endif
-
 	dtape_log_debug("%s: kn=%p, kqchan=%p; invoking callback...", __FUNCTION__, kn, kqchan);
 
-	kqchan->callback(kqchan->context);
+	kqchan_notify(kqchan);
 };
 
 void knote(struct klist* list, long hint) {
@@ -193,7 +191,7 @@ static void kqchan_waitq_waiter_entry(void* context, wait_result_t wait_result) 
 			break;
 		} else {
 			if (filt_machportpeek(&kqchan->knote) & FILTER_ACTIVE) {
-				kqchan->callback(kqchan->context);
+				kqchan_notify(kqchan);
 			}
 			// wait until it's read
 			if (!dtape_semaphore_down_simple(kqchan->waiter_read_semaphore)) {
