@@ -282,7 +282,7 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
 	return _readOrWriteMemory(true, remoteAddress, const_cast<void*>(localBuffer), length, errorCode);
 };
 
-void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+void DarlingServer::Process::notifyCheckin(Architecture architecture, bool isFork) {
 	std::unique_lock lock(_rwlock);
 
 	bool didExec = _pendingReplacement;
@@ -370,8 +370,10 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
 	if (didExec) {
 		// notify listeners that we have exec'd (i.e. been replaced)
 		_notifyListeningKqchannels(NOTE_EXEC, 0);
-	} else {
-		// notify the parent process (if we have one) that we've arrived
+	} else if (isFork) {
+		// notify the parent process (if we have one) that we've arrived: its fork() returns now, and not before,
+		// because our task copied the parent's special ports when we were registered, and the parent may change
+		// them as soon as fork() returns (launchd resets its bootstrap port)
 		if (auto parent = _parentProcess.lock()) {
 			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
@@ -399,9 +401,9 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
 	_kqchannels.erase(kqchan->_idForProcess());
 };
 
-void DarlingServer::Process::waitForChildAfterFork() {
+bool DarlingServer::Process::waitForChildAfterFork() {
 	// this function is always called within a microthread
-	dtape_semaphore_down_simple(_dtapeForkWaitSemaphore);
+	return dtape_semaphore_down_simple(_dtapeForkWaitSemaphore);
 };
 
 void DarlingServer::Process::registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan) {

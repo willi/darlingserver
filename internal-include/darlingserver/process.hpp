@@ -175,7 +175,11 @@ namespace DarlingServer {
 		bool readMemory(uintptr_t remoteAddress, void* localBuffer, size_t length, int* errorCode = nullptr) const;
 		bool writeMemory(uintptr_t remoteAddress, const void* localBuffer, size_t length, int* errorCode = nullptr) const;
 
-		void notifyCheckin(Architecture architecture);
+		/**
+		 * The process' main thread checked in: after an exec (a pending replacement), or as a new process.
+		 * `isFork` says the new process is a fork child, whose arrival the parent's waitForChildAfterFork() waits for.
+		 */
+		void notifyCheckin(Architecture architecture, bool isFork);
 		void setPendingReplacement();
 
 		void registerKqchan(std::shared_ptr<Kqchan> kqchan);
@@ -184,7 +188,11 @@ namespace DarlingServer {
 		void registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan);
 		void unregisterListeningKqchan(uintptr_t kqchanID);
 
-		void waitForChildAfterFork();
+		/**
+		 * Waits for the next fork child to check in. Returns `false` if the wait was interrupted (by a signal)
+		 * before one did; the caller must wait again.
+		 */
+		bool waitForChildAfterFork();
 
 		bool is64Bit() const;
 		Architecture architecture() const;

@@ -296,9 +296,13 @@ void DarlingServer::Call::Checkin::processCall() {
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
-			// the process needs to know when the checkin occurs, in case it has a pending replacement
-			// and also to notify its parent about when the fork is complete
-			process->notifyCheckin(static_cast<Process::Architecture>(_header.architecture));
+			// the process needs to know when its main thread checks in, in case it has a pending replacement
+			// and also to notify its parent about when the fork is complete. Every new thread checks in too
+			// (mldr's elfcalls); that is neither, and must not count as a fork child arriving: each one
+			// would let a later fork() of the parent return before its child was registered.
+			if (thread->nsid() == process->nsid()) {
+				process->notifyCheckin(static_cast<Process::Architecture>(_header.architecture), _body.is_fork);
+			}
 		} else {
 			code = -ESRCH;
 		}
@@ -699,7 +703,10 @@ void DarlingServer::Call::ForkWaitForChild::processCall() {
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
-			process->waitForChildAfterFork();
+			// interrupted by a signal: the client retries (_mach_fork_parent), so the child's checkin is not lost
+			if (!process->waitForChildAfterFork()) {
+				code = -EINTR;
+			}
 		} else {
 			code = -ESRCH;
 		}
