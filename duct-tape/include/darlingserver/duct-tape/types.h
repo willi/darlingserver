@@ -25,6 +25,7 @@ typedef enum dtape_semaphore_wait_result {
 	dtape_semaphore_wait_result_error = -1,
 	dtape_semaphore_wait_result_ok = 0,
 	dtape_semaphore_wait_result_interrupted = 1,
+	dtape_semaphore_wait_result_timed_out = 2,
 } dtape_semaphore_wait_result_t;
 
 typedef void (*dtape_thread_continuation_callback_f)(void* context);

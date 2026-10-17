@@ -296,9 +296,9 @@ void DarlingServer::Call::Checkin::processCall() {
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
-			// the process needs to know when the checkin occurs, in case it has a pending replacement
-			// and also to notify its parent about when the fork is complete
-			process->notifyCheckin(static_cast<Process::Architecture>(_header.architecture));
+			// the process needs to know when its main thread checks in, in case it has a pending replacement,
+			// and to tell its parent when the fork is complete
+			process->notifyCheckin(*thread, static_cast<Process::Architecture>(_header.architecture), _body.is_fork);
 		} else {
 			code = -ESRCH;
 		}
@@ -699,7 +699,17 @@ void DarlingServer::Call::ForkWaitForChild::processCall() {
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
-			process->waitForChildAfterFork();
+			switch (process->waitForChildAfterFork(_body.child, _body.child_pidfd)) {
+				case Process::ForkWaitResult::Arrived:
+					break;
+				case Process::ForkWaitResult::ChildGone:
+					code = -ESRCH;
+					break;
+				case Process::ForkWaitResult::Interrupted:
+					// the client waits again; the child's arrival is kept until then
+					code = -EINTR;
+					break;
+			}
 		} else {
 			code = -ESRCH;
 		}
