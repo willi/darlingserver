@@ -51,6 +51,9 @@ namespace DarlingServer {
 		friend class Registry<Process>;
 
 	public:
+		using ID = pid_t;
+		using NSID = ID;
+
 		enum class Architecture {
 			Invalid = dserver_rpc_architecture_invalid,
 			i386 = dserver_rpc_architecture_i386,
@@ -101,14 +104,14 @@ namespace DarlingServer {
 		bool _pendingReplacement = false;
 		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
 		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
-		// fork children that have checked in and that this process' fork() hasn't seen yet: namespace PID ->
-		// the child's ID, which tells it from an earlier process that had the same namespace PID
+		// fork children that have checked in and that this process' fork() hasn't taken yet: the child's
+		// namespace PID -> its ID, which tells it from an earlier process that had the same namespace PID.
+		// Only waitForChildAfterFork() removes entries.
 		std::mutex _forkLock;
-		std::unordered_map<pid_t, pid_t> _forkArrivals;
-		// raised for every arrival; guarded by _forkLock (exec and death replace or destroy it)
+		std::unordered_map<NSID, ID> _forkArrivals;
+		// raised for every arrival. The pointer is guarded by _forkLock (exec and death replace or destroy the
+		// semaphore); a waiter retains it before it unlocks.
 		dtape_semaphore_t* _dtapeForkWaitSemaphore;
-		// the server learns of our death from a lifetime pipe, as there is no pidfd_open (Linux before 5.3)
-		bool _lifetimeFromPipe = false;
 		Architecture _architecture;
 		std::weak_ptr<Process> _tracerProcess;
 		std::string _executablePath;
@@ -131,8 +134,7 @@ namespace DarlingServer {
 		void _notifyListeningKqchannels(uint32_t event, int64_t data);
 
 		void _replaceTaskAfterExec(std::unique_lock<std::shared_mutex>& lock, Architecture architecture);
-		void _forkChildArrived(pid_t child, pid_t childID);
-		void _forgetForkChild(pid_t child, pid_t childID);
+		void _forkChildArrived(NSID child, ID childID);
 
 #if DSERVER_EXTENDED_DEBUG
 		void _registerName(uint32_t name, uintptr_t pointer);
@@ -149,9 +151,6 @@ namespace DarlingServer {
 		void _setEternalID(EternalID eid);
 
 	public:
-		using ID = pid_t;
-		using NSID = ID;
-
 		Process(ID id, NSID nsid, Architecture architecture, int pipe = -1);
 		Process(KernelProcessConstructorTag tag);
 		~Process();
@@ -203,7 +202,7 @@ namespace DarlingServer {
 
 		enum class ForkWaitResult {
 			Arrived,     // the child has checked in, so its task has the special ports we had when we forked
-			ChildGone,   // the child died before it checked in (or we are dying)
+			ChildGone,   // the child died before it checked in, or we are dying or exec'ing (the semaphore is gone)
 			Interrupted, // a signal interrupted the wait; the caller waits again
 		};
 

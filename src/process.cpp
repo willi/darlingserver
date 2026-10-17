@@ -37,8 +37,7 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
 	_nspid(nsid),
 	_architecture(architecture)
 {
-	_lifetimeFromPipe = pipe >= 0;
-	int pidfd = _lifetimeFromPipe ? pipe : syscall(SYS_pidfd_open, _pid, 0);
+	int pidfd = (pipe >= 0) ? pipe : syscall(SYS_pidfd_open, _pid, 0);
 	if (pidfd < 0) {
 		throw std::system_error(errno, std::generic_category(), "Failed to open pidfd for process");
 	}
@@ -296,7 +295,7 @@ void DarlingServer::Process::notifyCheckin(const Thread& thread, Architecture ar
 
 	if (didExec) {
 		_replaceTaskAfterExec(lock, architecture);
-	} else if (architecture != _architecture) {
+	} else if (isFork && architecture != _architecture) {
 		throw std::runtime_error("Impossible: parent process architecture != child process architecture on fork");
 	}
 
@@ -366,19 +365,21 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 	dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
 	mainThread->_s2cInterruptExitSemaphore = nullptr;
 
-	// destroy the fork-wait semaphore, and create one for the new task below (a fork child's arrival raises it)
-	std::unique_lock forkLock(_forkLock);
-	dtape_semaphore_destroy(_dtapeForkWaitSemaphore);
-	_dtapeForkWaitSemaphore = nullptr;
+	// replace the fork-wait semaphore with one of the new task's (a fork child's arrival raises it)
+	auto newForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	dtape_semaphore_t* oldForkWaitSemaphore;
+	{
+		std::unique_lock forkLock(_forkLock);
+		oldForkWaitSemaphore = _dtapeForkWaitSemaphore;
+		_dtapeForkWaitSemaphore = newForkWaitSemaphore;
+	}
+	dtape_semaphore_destroy(oldForkWaitSemaphore);
 
 	// release the main thread's old duct-taped thread
 	dtape_thread_release(oldThread);
 
 	// release the old task
 	dtape_task_release(oldTask);
-
-	_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-	forkLock.unlock();
 
 	// create new S2C semaphores for the main thread
 	mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
@@ -407,14 +408,16 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
 	_kqchannels.erase(kqchan->_idForProcess());
 };
 
-// the ID (the PID in our namespace) of the process a pidfd refers to, or -1
+// the ID (the PID in our namespace) of the process a pidfd refers to, or -1 if it is unknown or reaped
 static pid_t pidOfPidfd(int pidfd) {
 	std::ifstream fdinfo("/proc/self/fdinfo/" + std::to_string(pidfd));
 	std::string line;
 	while (std::getline(fdinfo, line)) {
 		if (line.rfind("Pid:", 0) == 0) {
 			try {
-				return std::stoi(line.substr(4));
+				pid_t pid = std::stoi(line.substr(4));
+				// 0: in a PID namespace we can't see into
+				return (pid > 0) ? pid : -1;
 			} catch (...) {
 				return -1;
 			}
@@ -428,7 +431,7 @@ static bool pidfdExited(int pidfd) {
 	return poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR));
 };
 
-void DarlingServer::Process::_forkChildArrived(pid_t child, pid_t childID) {
+void DarlingServer::Process::_forkChildArrived(NSID child, ID childID) {
 	std::unique_lock lock(_forkLock);
 	_forkArrivals[child] = childID;
 	if (_dtapeForkWaitSemaphore) {
@@ -436,22 +439,24 @@ void DarlingServer::Process::_forkChildArrived(pid_t child, pid_t childID) {
 	}
 };
 
-void DarlingServer::Process::_forgetForkChild(pid_t child, pid_t childID) {
-	std::unique_lock lock(_forkLock);
-	auto it = _forkArrivals.find(child);
-	if (it != _forkArrivals.end() && it->second == childID) {
-		_forkArrivals.erase(it);
-	}
-};
-
 DarlingServer::Process::ForkWaitResult DarlingServer::Process::waitForChildAfterFork(NSID child, int childPidfd) {
 	// how often we look whether a child that hasn't checked in has died; it normally checks in within milliseconds
 	static constexpr uint64_t deathPollNs = 100ull * 1000 * 1000;
+	// without a pidfd (Linux before 5.3) we can't see the child die: give up after this long rather than hang
+	static constexpr int maxPollsWithoutPidfd = 100;
 
-	ID childID = (childPidfd >= 0) ? pidOfPidfd(childPidfd) : -1;
+	ID childID = -1;
+	if (childPidfd >= 0) {
+		childID = pidOfPidfd(childPidfd);
+		if (childID < 0 && !pidfdExited(childPidfd)) {
+			processLog.warning() << *this << ": fork wait: no PID for the pidfd of child " << child << "; going by its namespace PID" << processLog.endLog;
+		}
+	}
 
-	while (true) {
+	// timed-out waits, which are what counts without a pidfd
+	for (int polls = 0; ;) {
 		dtape_semaphore_t* semaphore;
+		bool gone = false;
 		{
 			std::unique_lock lock(_forkLock);
 			auto it = _forkArrivals.find(child);
@@ -465,21 +470,49 @@ DarlingServer::Process::ForkWaitResult DarlingServer::Process::waitForChildAfter
 				}
 			}
 			semaphore = _dtapeForkWaitSemaphore;
+			if (semaphore) {
+				dtape_semaphore_retain(semaphore);
+			}
 		}
 
-		if ((childPidfd >= 0 && pidfdExited(childPidfd)) || !semaphore) {
+		if (!semaphore) {
+			// we are dying
 			return ForkWaitResult::ChildGone;
 		}
 
-		// woken by any child's arrival: look again
-		switch (dtape_semaphore_down_timed(semaphore, deathPollNs)) {
-			case dtape_semaphore_wait_result_ok:
-			case dtape_semaphore_wait_result_timed_out:
-				break;
-			case dtape_semaphore_wait_result_interrupted:
-				return ForkWaitResult::Interrupted;
-			default:
-				return ForkWaitResult::ChildGone;
+		if (childPidfd >= 0 ? pidfdExited(childPidfd) : polls >= maxPollsWithoutPidfd) {
+			if (childPidfd < 0) {
+				processLog.warning() << *this << ": fork wait: child " << child << " hasn't checked in after " << (maxPollsWithoutPidfd * deathPollNs / 1000000000ull) << " s; fork() returns" << processLog.endLog;
+			}
+			gone = true;
+		} else {
+			// woken by any child's arrival: look again
+			switch (dtape_semaphore_down_timed(semaphore, deathPollNs)) {
+				case dtape_semaphore_wait_result_ok:
+					break;
+				case dtape_semaphore_wait_result_timed_out:
+					polls++;
+					break;
+				case dtape_semaphore_wait_result_interrupted:
+					// the child's arrival, if any, stays for the retry
+					dtape_semaphore_release(semaphore);
+					return ForkWaitResult::Interrupted;
+				default:
+					// the semaphore was destroyed: we are dying or exec'ing
+					gone = true;
+					break;
+			}
+		}
+		dtape_semaphore_release(semaphore);
+
+		if (gone) {
+			// the child may have arrived just before it died
+			std::unique_lock lock(_forkLock);
+			auto it = _forkArrivals.find(child);
+			if (it != _forkArrivals.end() && (childID < 0 || it->second == childID)) {
+				_forkArrivals.erase(it);
+			}
+			return ForkWaitResult::ChildGone;
 		}
 	}
 };
@@ -803,15 +836,6 @@ void DarlingServer::Process::notifyDead() {
 
 	// TODO: get exit status
 	_notifyListeningKqchannels(NOTE_EXIT, 0);
-
-	// an arrival no fork() took (the parent that forked us died first, and we were reparented) must not outlive
-	// us: our namespace PID may be reused. With pidfds, a parent still waiting sees us die; without them (Linux
-	// before 5.3) it can only see our arrival, so that is kept.
-	if (!_lifetimeFromPipe) {
-		if (auto parent = _parentProcess.lock()) {
-			parent->_forgetForkChild(_nspid, _pid);
-		}
-	}
 
 	// notify all our threads that we're dead
 	for (auto [id, maybeThread]: threads) {

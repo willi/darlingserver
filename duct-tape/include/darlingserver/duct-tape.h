@@ -127,6 +127,12 @@ void dtape_semaphore_up(dtape_semaphore_t* semaphore);
 dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore);
 bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore);
 dtape_semaphore_wait_result_t dtape_semaphore_down_timed(dtape_semaphore_t* semaphore, uint64_t timeout_ns);
+/**
+ * Keeps a semaphore usable by a waiter that got it from somewhere it may be destroyed meanwhile: a wait on a
+ * destroyed semaphore then fails instead of reading freed memory. Each retain needs a release.
+ */
+void dtape_semaphore_retain(dtape_semaphore_t* semaphore);
+void dtape_semaphore_release(dtape_semaphore_t* semaphore);
 
 uint64_t dtape_debug_task_port_count(dtape_task_t* task);
 uint64_t dtape_debug_task_list_ports(dtape_task_t* task, dtape_debug_task_list_ports_iterator_f iterator, void* context);

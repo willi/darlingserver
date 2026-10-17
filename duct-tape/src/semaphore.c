@@ -13,6 +13,7 @@ dtape_semaphore_t* dtape_semaphore_create(dtape_task_t* owning_task, int initial
 	}
 
 	semaphore->owning_task = owning_task;
+	semaphore->references = 1;
 
 	if (semaphore_create(&semaphore->owning_task->xnu_task, &semaphore->xnu_semaphore, 0, initial_value) != KERN_SUCCESS) {
 		free(semaphore);
@@ -22,12 +23,29 @@ dtape_semaphore_t* dtape_semaphore_create(dtape_task_t* owning_task, int initial
 	return semaphore;
 };
 
+static void dtape_semaphore_put(dtape_semaphore_t* semaphore) {
+	if (__atomic_sub_fetch(&semaphore->references, 1, __ATOMIC_ACQ_REL) == 0) {
+		free(semaphore);
+	}
+};
+
 void dtape_semaphore_destroy(dtape_semaphore_t* semaphore) {
+	// wakes its waiters (KERN_TERMINATED) and drops the creator's XNU reference
 	if (semaphore_destroy(&semaphore->owning_task->xnu_task, semaphore->xnu_semaphore) != KERN_SUCCESS) {
 		panic("Failed to destroy duct-taped XNU semaphore");
 	}
 
-	free(semaphore);
+	dtape_semaphore_put(semaphore);
+};
+
+void dtape_semaphore_retain(dtape_semaphore_t* semaphore) {
+	semaphore_reference(semaphore->xnu_semaphore);
+	__atomic_add_fetch(&semaphore->references, 1, __ATOMIC_RELAXED);
+};
+
+void dtape_semaphore_release(dtape_semaphore_t* semaphore) {
+	semaphore_dereference(semaphore->xnu_semaphore);
+	dtape_semaphore_put(semaphore);
 };
 
 void dtape_semaphore_up(dtape_semaphore_t* semaphore) {
