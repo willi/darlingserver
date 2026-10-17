@@ -101,7 +101,14 @@ namespace DarlingServer {
 		bool _pendingReplacement = false;
 		std::unordered_map<uintptr_t, std::shared_ptr<Kqchan>> _kqchannels;
 		std::unordered_map<uintptr_t, std::weak_ptr<Kqchan::Process>> _listeningKqchannels;
+		// fork children that have checked in and that this process' fork() hasn't seen yet: namespace PID ->
+		// the child's ID, which tells it from an earlier process that had the same namespace PID
+		std::mutex _forkLock;
+		std::unordered_map<pid_t, pid_t> _forkArrivals;
+		// raised for every arrival; guarded by _forkLock (exec and death replace or destroy it)
 		dtape_semaphore_t* _dtapeForkWaitSemaphore;
+		// the server learns of our death from a lifetime pipe, as there is no pidfd_open (Linux before 5.3)
+		bool _lifetimeFromPipe = false;
 		Architecture _architecture;
 		std::weak_ptr<Process> _tracerProcess;
 		std::string _executablePath;
@@ -122,6 +129,10 @@ namespace DarlingServer {
 		bool _readOrWriteMemory(bool isWrite, uintptr_t remoteAddress, void* localBuffer, size_t length, int* errorCode) const;
 
 		void _notifyListeningKqchannels(uint32_t event, int64_t data);
+
+		void _replaceTaskAfterExec(std::unique_lock<std::shared_mutex>& lock, Architecture architecture);
+		void _forkChildArrived(pid_t child, pid_t childID);
+		void _forgetForkChild(pid_t child, pid_t childID);
 
 #if DSERVER_EXTENDED_DEBUG
 		void _registerName(uint32_t name, uintptr_t pointer);
@@ -176,10 +187,12 @@ namespace DarlingServer {
 		bool writeMemory(uintptr_t remoteAddress, const void* localBuffer, size_t length, int* errorCode = nullptr) const;
 
 		/**
-		 * The process' main thread checked in: after an exec (a pending replacement), or as a new process.
-		 * `isFork` says the new process is a fork child, whose arrival the parent's waitForChildAfterFork() waits for.
+		 * `thread` checked in. Only the main thread's checkin says something about the process: after an exec (a
+		 * pending replacement), or as a new process. `isFork` says the new process is a fork child, whose arrival
+		 * its parent's waitForChildAfterFork() waits for. Every other thread checks in too, when it starts; that
+		 * only registers the thread.
 		 */
-		void notifyCheckin(Architecture architecture, bool isFork);
+		void notifyCheckin(const Thread& thread, Architecture architecture, bool isFork);
 		void setPendingReplacement();
 
 		void registerKqchan(std::shared_ptr<Kqchan> kqchan);
@@ -188,11 +201,18 @@ namespace DarlingServer {
 		void registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan);
 		void unregisterListeningKqchan(uintptr_t kqchanID);
 
+		enum class ForkWaitResult {
+			Arrived,     // the child has checked in, so its task has the special ports we had when we forked
+			ChildGone,   // the child died before it checked in (or we are dying)
+			Interrupted, // a signal interrupted the wait; the caller waits again
+		};
+
 		/**
-		 * Waits for the next fork child to check in. Returns `false` if the wait was interrupted (by a signal)
-		 * before one did; the caller must wait again.
+		 * Waits for the fork child with namespace PID `child` to check in. `childPidfd` (or -1, without pidfd
+		 * support) tells the child from an earlier process with its PID, and shows it dying before it checks in.
+		 * Always called within a microthread.
 		 */
-		bool waitForChildAfterFork();
+		ForkWaitResult waitForChildAfterFork(NSID child, int childPidfd);
 
 		bool is64Bit() const;
 		Architecture architecture() const;

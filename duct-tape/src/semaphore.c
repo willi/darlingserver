@@ -48,6 +48,21 @@ dtape_semaphore_wait_result_t dtape_semaphore_down(dtape_semaphore_t* semaphore)
 	}
 };
 
+dtape_semaphore_wait_result_t dtape_semaphore_down_timed(dtape_semaphore_t* semaphore, uint64_t timeout_ns) {
+	mach_timespec_t timeout = { (unsigned int)(timeout_ns / NSEC_PER_SEC), (clock_res_t)(timeout_ns % NSEC_PER_SEC) };
+	kern_return_t kr = semaphore_timedwait(semaphore->xnu_semaphore, timeout);
+	switch (kr) {
+		case KERN_SUCCESS:
+			return dtape_semaphore_wait_result_ok;
+		case KERN_ABORTED:
+			return dtape_semaphore_wait_result_interrupted;
+		case KERN_OPERATION_TIMED_OUT:
+			return dtape_semaphore_wait_result_timed_out;
+		default:
+			return dtape_semaphore_wait_result_error;
+	}
+};
+
 bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore) {
 	kern_return_t kr = semaphore_wait(semaphore->xnu_semaphore);
 	switch (kr) {
