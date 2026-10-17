@@ -1625,6 +1625,10 @@ for call in calls:
 		tmp += parse_type(param, True) + "* out_" + param_name
 		public_header.write(tmp)
 		library_source.write(tmp)
+	# a prototype, so that C checks every call: "()" would take any arguments
+	if is_first:
+		public_header.write("void")
+		library_source.write("void")
 	public_header.write(");\n\n")
 	library_source.write(") {\n")
 
