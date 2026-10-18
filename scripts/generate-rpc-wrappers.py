@@ -703,8 +703,14 @@ calls = [
 		('fd', '@fd'),
 	], UNMANAGED_CALL),
 
+	# Append only, here at the end, whatever the call: a call's number is its index in this list
+	# (dserver_callnum_*), so a call inserted above renumbers every one below it, and two branches that each append
+	# one give two calls the same number, which nothing here would notice.
+
 	# whether a kprintf call's string reaches darlingserver's log; it doesn't change while darlingserver runs,
-	# so a client asks once and skips the kprintf calls that would be dropped
+	# so each client image asks once and skips the kprintf calls that would be dropped. A client may ask only a
+	# darlingserver that answers an unknown call with -ENOSYS (from "calls: answer a dropped call with an error"):
+	# an older one ends on it, and every process with it.
 	('kprintf_logged', [], [
 		('logged', 'bool'),
 	]),

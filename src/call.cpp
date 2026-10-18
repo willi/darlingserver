@@ -561,9 +561,17 @@ void DarlingServer::Call::MachReplyPort::processCall() {
 };
 
 static DarlingServer::Log kprintfLog("kprintf");
+// the level kprintf strings are logged at, which kprintf_logged answers for
+static constexpr DarlingServer::Log::Type kprintfLevel = DarlingServer::Log::Type::Info;
 
 void DarlingServer::Call::Kprintf::processCall() {
 	int code = 0;
+
+	// a client that doesn't ask kprintf_logged (mldr, an older image) pays for the call, not for reading the string
+	if (!kprintfLog.willLog(kprintfLevel)) {
+		_sendReply(0);
+		return;
+	}
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
@@ -579,7 +587,7 @@ void DarlingServer::Call::Kprintf::processCall() {
 					}
 					tmp[len] = '\0';
 
-					kprintfLog.info() << tmp << kprintfLog.endLog;
+					kprintfLog.stream(kprintfLevel) << tmp << kprintfLog.endLog;
 				} else {
 					// readMemory returns a positive error code, but we want a negative one
 					code = -code;
@@ -600,7 +608,7 @@ void DarlingServer::Call::Kprintf::processCall() {
 };
 
 void DarlingServer::Call::KprintfLogged::processCall() {
-	_sendReply(0, kprintfLog.infoLogged());
+	_sendReply(0, kprintfLog.willLog(kprintfLevel));
 };
 
 void DarlingServer::Call::StartedSuspended::processCall() {

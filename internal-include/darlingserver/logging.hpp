@@ -34,6 +34,7 @@ namespace DarlingServer {
 		std::string _category;
 		bool _alwaysLog = false;
 
+	public:
 		enum class Type {
 			Debug = 1,
 			Info = 2,
@@ -41,6 +42,7 @@ namespace DarlingServer {
 			Error = 4,
 		};
 
+	private:
 		void _log(Type type, std::string message) const;
 		bool _willLog(Type type) const;
 		static std::string _typeToString(Type type);
@@ -62,9 +64,10 @@ namespace DarlingServer {
 		Stream info() const;
 		Stream warning() const;
 		Stream error() const;
+		Stream stream(Type type) const;
 
-		// whether info() messages reach the log
-		bool infoLogged() const;
+		// whether a message of this type reaches the log; it never changes while darlingserver runs
+		bool willLog(Type type) const;
 	};
 
 	class Loggable {

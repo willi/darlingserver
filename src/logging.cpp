@@ -110,8 +110,10 @@ static int logFileDescriptor() {
 };
 
 // The log level and categories are read from the environment once, so whether a message is logged never changes
-// while darlingserver runs. libsystem_kernel relies on that: it asks kprintf_logged once per process and caches the
-// answer. A way to change the level at run time must make clients ask again.
+// while darlingserver runs. libsystem_kernel relies on that: each of its images (dyld, libsystem_kernel) asks
+// kprintf_logged once and caches the answer. A way to change the level at run time must make clients ask again.
+// dserver.log is opened, and created, by the first message that is logged, not by the first one written at any level:
+// at the default level (Error), it doesn't exist until darlingserver logs an error.
 bool DarlingServer::Log::_willLog(Type type) const {
 	static Type logMinLevel = []() {
 		auto val = getenv("DSERVER_LOG_LEVEL");
@@ -141,8 +143,12 @@ bool DarlingServer::Log::_willLog(Type type) const {
 	return (type >= logMinLevel || _alwaysLog || debugCategory) && logFileDescriptor() >= 0;
 };
 
-bool DarlingServer::Log::infoLogged() const {
-	return _willLog(Type::Info);
+bool DarlingServer::Log::willLog(Type type) const {
+	return _willLog(type);
+};
+
+DarlingServer::Log::Stream DarlingServer::Log::stream(Type type) const {
+	return Stream(type, *this);
 };
 
 void DarlingServer::Log::_log(Type type, std::string message) const {
