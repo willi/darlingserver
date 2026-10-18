@@ -1248,8 +1248,27 @@ void DarlingServer::Call::S2CPerform::processCall() {
 	int code = 0;
 
 	if (auto thread = _thread.lock()) {
-		dtape_semaphore_up(thread->_s2cInterruptEnterSemaphore);
-		dtape_semaphore_down_simple(thread->_s2cInterruptExitSemaphore);
+		// taken and retained under the lock: notifyDead() and the release destroy them (see Thread::_s2cPerform())
+		dtape_semaphore_t* enterSemaphore = nullptr;
+		dtape_semaphore_t* exitSemaphore = nullptr;
+		{
+			std::shared_lock lock(thread->_rwlock);
+			if (thread->_s2cInterruptEnterSemaphore && thread->_s2cInterruptExitSemaphore) {
+				enterSemaphore = thread->_s2cInterruptEnterSemaphore;
+				exitSemaphore = thread->_s2cInterruptExitSemaphore;
+				dtape_semaphore_retain(enterSemaphore);
+				dtape_semaphore_retain(exitSemaphore);
+			}
+		}
+		if (enterSemaphore) {
+			dtape_semaphore_up(enterSemaphore);
+			dtape_semaphore_down_simple(exitSemaphore);
+			dtape_semaphore_release(enterSemaphore);
+			dtape_semaphore_release(exitSemaphore);
+		} else {
+			// dead: no S2C call is waiting for it
+			code = -ESRCH;
+		}
 	} else {
 		code = -ESRCH;
 	}

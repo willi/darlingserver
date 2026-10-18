@@ -147,6 +147,8 @@ namespace DarlingServer {
 #endif
 
 		std::shared_ptr<Thread> _pickS2CThread(void) const;
+		template<typename Function>
+		auto _performS2C(Function&& function);
 
 		void _dispose();
 
