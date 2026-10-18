@@ -163,11 +163,23 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		char tmp = 1;
 
 		if (pipeDesc < 0) {
-			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
+			// nothing to wake the client with: it waits for ever, but the others go on
+			callLog.error() << *thread << ": Client pushed a reply without a synchronization pipe; dropped it" << callLog.endLog;
+			return nullptr;
 		}
 
+		// A push the thread's state can't take is the client's mistake (a fork child that ran a signal handler on
+		// its parent's socket made them): drop the reply and let the client go on, instead of dying with every
+		// other process's calls.
+		auto dropPushedReply = [&](const char* why) {
+			callLog.error() << *thread << ": Client-pushed reply dropped: " << why << callLog.endLog;
+			write(pipeDesc, &tmp, sizeof(tmp));
+			close(pipeDesc);
+			return nullptr;
+		};
+
 		if (!process->readMemory(pushReplyCall->reply, replyToSave.data().data(), pushReplyCall->reply_size)) {
-			throw std::runtime_error("Failed to read client-pushed reply body");
+			return dropPushedReply("its body couldn't be read");
 		}
 
 		replyToSave.replaceDescriptors(requestMessage.descriptors());
@@ -184,10 +196,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 				thread->_pendingSavedReply = std::move(replyToSave);
 			} else {
 				if (thread->_interrupts.empty()) {
-					throw std::runtime_error("Client tried to push reply outside of interrupt");
+					lock.unlock();
+					return dropPushedReply("the thread isn't in an interrupt");
 				}
 				if (thread->_interrupts.top().savedReply) {
-					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
+					// the interrupted call gets the reply that came first
+					lock.unlock();
+					return dropPushedReply("the interrupt already has a saved reply");
 				}
 				thread->_interrupts.top().savedReply = std::move(replyToSave);
 			}
