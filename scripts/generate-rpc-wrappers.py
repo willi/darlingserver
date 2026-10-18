@@ -1546,6 +1546,14 @@ for call in calls:
 		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
 	library_source.write("\t}\n\n")
 
+	# darlingserver answers a call it drops (an unknown number, a malformed call) with only a reply header and an
+	# error code: return that code
+	library_source.write("\tif (long_status == sizeof(dserver_rpc_replyhdr_t) && reply_msg.reply.header.code < 0) {\n")
+	if (flags & ALLOW_INTERRUPTIONS) == 0:
+		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+	library_source.write("\t\treturn reply_msg.reply.header.code;\n")
+	library_source.write("\t}\n\n")
+
 	library_source.write("\tif (long_status != sizeof(reply_msg.reply)) {\n")
 	if (flags & ALLOW_INTERRUPTIONS) == 0:
 		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
@@ -1670,6 +1678,9 @@ for call in calls:
 	curr_call_len_str = "(dserver_rpc_helper_max(sizeof(dserver_rpc_call_" + call_name + "_t), " + curr_call_len_str + "))"
 	curr_reply_len_str = "(dserver_rpc_helper_max(sizeof(dserver_rpc_reply_" + call_name + "_t), " + curr_reply_len_str + "))"
 
+# the byte darlingserver writes to a push_reply's pipe: it took the reply (1, what it always wrote), or dropped it
+public_header.write("#define DSERVER_PUSH_REPLY_SAVED 1\n")
+public_header.write("#define DSERVER_PUSH_REPLY_DROPPED 0\n")
 public_header.write("#define DSERVER_RPC_CALL_MAX_LENGTH " + curr_call_len_str + "\n")
 public_header.write("#define DSERVER_RPC_REPLY_MAX_LENGTH " + curr_reply_len_str + "\n")
 public_header.write("#define DSERVER_RPC_CALL_MAX_FD_COUNT " + str(max_call_fd_count) + "\n")

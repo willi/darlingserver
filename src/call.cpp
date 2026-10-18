@@ -28,14 +28,26 @@
 #include <sys/fcntl.h>
 #include <sys/syscall.h>
 #include <darlingserver/kqchan.hpp>
+#include <algorithm>
+#include <cstring>
 
 static DarlingServer::Log callLog("calls");
 
 DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
 
+// The largest reply of any call. (The generated DSERVER_RPC_REPLY_MAX_LENGTH nests a max() macro once per call, so its
+// expansion doubles with each: the compiler runs out of memory on it.)
+static constexpr size_t maxReplySize() {
+	size_t max = 0;
+	#define CALL_CASE(_callName, _className) max = std::max(max, sizeof(dserver_rpc_reply_ ## _callName ## _t))
+	DSERVER_CONSTRUCT_CASES
+	#undef CALL_CASE
+	return max;
+}
+
 std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
-		throw std::invalid_argument("Message buffer was too small for call header");
+		throw ProtocolError("Message buffer was too small for call header");
 	}
 
 	dserver_rpc_callhdr_t* header = reinterpret_cast<dserver_rpc_callhdr_t*>(requestMessage.data().data());
@@ -43,18 +55,51 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	std::shared_ptr<Process> process = nullptr;
 	std::shared_ptr<Thread> thread = nullptr;
 
-	// first, make sure we know this call number
+	// first, make sure we know this call number, and that the message is large enough for its call, before anything
+	// changes for the thread that sent it
+	#define CALL_CASE(_callName, _className) \
+		case dserver_callnum_ ## _callName: { \
+			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
+				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t", -EINVAL); \
+			} \
+		} break;
+
 	switch (header->number) {
 		case dserver_callnum_s2c:
-		case dserver_callnum_push_reply:
-		DSERVER_VALID_CALLNUM_CASES
 			break;
 
+		case dserver_callnum_push_reply: {
+			if (requestMessage.data().size() < sizeof(dserver_rpc_call_push_reply_t)) {
+				throw ProtocolError("Message buffer was too small for dserver_rpc_call_push_reply_t");
+			}
+			// the reply is allocated and read before it's saved: no larger than any reply
+			auto pushReplyCall = reinterpret_cast<const dserver_rpc_call_push_reply_t*>(header);
+			if (pushReplyCall->reply_size > maxReplySize()) {
+				throw ProtocolError("Pushed reply larger than any reply");
+			}
+		} break;
+
+		DSERVER_CONSTRUCT_CASES
+
 		default:
-			throw std::invalid_argument("Invalid call number");
+			// as XNU's ipc_kobject_server() answers MIG_BAD_ID, and unix_syscall() nosys
+			throw ProtocolError("Invalid call number", -ENOSYS);
 	}
 
+	#undef CALL_CASE
+
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
+		// A push, an S2C reply and an interrupt_exit only make sense from a thread that has made calls before (an
+		// interrupt_enter, an S2C call): don't register a process or thread for one. A push from a thread that had
+		// checked out registered a Thread nobody would check out, which a later thread of another process with the
+		// same TID would have found.
+		if (header->number == dserver_callnum_push_reply || header->number == dserver_callnum_s2c || header->number == dserver_callnum_interrupt_exit) {
+			auto knownThread = threadRegistry().lookupEntryByNSID(header->tid);
+			if (!knownThread || !(*knownThread)->process() || (*knownThread)->process()->nsid() != header->pid) {
+				throw ProtocolError("Call from a thread darlingserver doesn't know", -ESRCH);
+			}
+		}
+
 		// now let's lookup (and possibly create) the process and thread making this call
 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
 			std::shared_ptr<Process> tmp = nullptr;
@@ -80,13 +125,17 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		});
 
 		if (!process) {
-			callLog.error() << "Received call from non-existent process?" << callLog.endLog;
-
-			// ignore this call
-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
-			return nullptr;
+			throw ProtocolError("Received call from non-existent process?", -ESRCH);
 		}
 
+		// before the thread's reply address moves to this message's socket: a message naming another process's
+		// thread mustn't redirect that thread's replies. The header's PID is the client's word, so a mismatch is
+		// a client's error (or a stale entry, whose calls then fail, loudly); either way, not darlingserver's to die of.
+		if (process->id() != requestMessage.pid()) {
+			throw ProtocolError("System-reported message PID " + std::to_string(requestMessage.pid()) + " != darlingserver-recorded PID " + std::to_string(process->id()), -ESRCH);
+		}
+
+		bool registeredHere = false;
 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
 			std::shared_ptr<Thread> tmp = nullptr;
 
@@ -106,29 +155,32 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			tmp->setAddress(requestMessage.address());
 			tmp->registerWithProcess();
 
-			// Every thread's first call is its checkin: mldr's at process start and thread start, a fork child's. A
-			// thread registered by another call is a client bug, most likely a signal handler that ran before the
-			// thread had checked in on its own socket, or after it had checked out. Nothing else does it, so it's
-			// logged as an error, which the default log level shows.
-			if (header->number != dserver_callnum_checkin) {
-				callLog.error() << "Thread " << header->tid << " of PID " << header->pid << " made call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") without checking in first (a signal handler before its checkin or after its checkout?)" << callLog.endLog;
-			}
+			registeredHere = true;
 			return tmp;
 		});
 
 		if (!thread) {
-			callLog.error() << "Received call from non-existent thread?" << callLog.endLog;
+			throw ProtocolError("Received call from non-existent thread?", -ESRCH);
+		}
 
-			// ignore this call
-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
-			return nullptr;
+		// (logged here, not in the factory, which runs with the registry's lock held)
+		// Every thread's first call is its checkin: mldr's at process start and thread start, a fork child's. A
+		// thread registered by another call is a client bug, most likely a signal handler that ran before the
+		// thread had checked in on its own socket, or after it had checked out. Nothing else does it, so it's
+		// logged as an error, which the default log level shows.
+		if (registeredHere && header->number != dserver_callnum_checkin) {
+			const char* name = dserver_callnum_to_string(header->number);
+			callLog.error() << "Thread " << header->tid << " of PID " << header->pid << " made call #" << header->number << " (" << (name ? name : "unknown") << ") without checking in first (a signal handler before its checkin or after its checkout?)" << callLog.endLog;
+		}
+
+		// A thread darlingserver knows from another process: an entry its thread never removed (it died without its
+		// checkout), now found by a thread of this process that Linux gave the same TID.
+		if (!registeredHere && thread->process() != process) {
+			const char* name = dserver_callnum_to_string(header->number);
+			callLog.error() << "Thread " << header->tid << " of PID " << header->pid << " made call #" << header->number << " (" << (name ? name : "unknown") << "), but darlingserver knows that TID from another process: a stale entry" << callLog.endLog;
 		}
 
 		thread->setAddress(requestMessage.address());
-
-		if (process->id() != requestMessage.pid()) {
-			throw std::runtime_error("System-reported message PID != darlingserver-recorded PID");
-		}
 	}
 
 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
@@ -142,7 +194,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			std::unique_lock lock(thread->_rwlock);
 
 			if (thread->_s2cReply) {
-				throw std::runtime_error("Received S2C reply but thread already had one pending");
+				throw ProtocolError("Received S2C reply but thread already had one pending");
 			}
 
 			thread->_s2cReply = std::move(requestMessage);
@@ -159,15 +211,28 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		Message replyToSave(pushReplyCall->reply_size, 0);
 
 		// extract the reply-push synchronization pipe
-		auto pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
-		char tmp = 1;
+		auto pipeDesc = requestMessage.descriptors().empty() ? -1 : requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+		char tmp = DSERVER_PUSH_REPLY_SAVED;
 
 		if (pipeDesc < 0) {
-			throw std::runtime_error("Failed to extract reply-push synchronization pipe");
+			// nothing to wake the client with: it waits for ever, but the others go on
+			callLog.error() << *thread << ": Client pushed a reply without a synchronization pipe; dropped it" << callLog.endLog;
+			return nullptr;
 		}
 
+		// A push the thread's state can't take is the client's mistake (a fork child that ran a signal handler on
+		// its parent's socket made them): drop the reply and let the client go on, instead of dying with every
+		// other process's calls.
+		auto dropPushedReply = [&](const char* why) {
+			callLog.error() << *thread << ": Client-pushed reply dropped: " << why << callLog.endLog;
+			char dropped = DSERVER_PUSH_REPLY_DROPPED;
+			write(pipeDesc, &dropped, sizeof(dropped));
+			close(pipeDesc);
+			return nullptr;
+		};
+
 		if (!process->readMemory(pushReplyCall->reply, replyToSave.data().data(), pushReplyCall->reply_size)) {
-			throw std::runtime_error("Failed to read client-pushed reply body");
+			return dropPushedReply("its body couldn't be read");
 		}
 
 		replyToSave.replaceDescriptors(requestMessage.descriptors());
@@ -177,17 +242,27 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 		{
 			std::unique_lock lock(thread->_rwlock);
-			if (thread->_pendingCall && thread->_pendingCall->number() == Call::Number::InterruptEnter) {
+			if ((thread->_pendingCall && thread->_pendingCall->number() == Call::Number::InterruptEnter) || !thread->_pendingInterrupts.empty()) {
 				// this means the client got interrupted after we had already sent a reply for the interrupted call,
 				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
-				// and we received both calls (interrupt_enter and push_reply) at the same time
+				// and we received both calls (interrupt_enter and push_reply) at the same time.
+				// The interrupt_enter may also still be queued behind the call it interrupted (setPendingCall), which
+				// has replied but not yet returned to the top of its microthread.
+				if (thread->_pendingSavedReply) {
+					// the interrupted call gets the reply that came first
+					lock.unlock();
+					return dropPushedReply("the pending interrupt already has a saved reply");
+				}
 				thread->_pendingSavedReply = std::move(replyToSave);
 			} else {
 				if (thread->_interrupts.empty()) {
-					throw std::runtime_error("Client tried to push reply outside of interrupt");
+					lock.unlock();
+					return dropPushedReply("the thread isn't in an interrupt");
 				}
 				if (thread->_interrupts.top().savedReply) {
-					throw std::runtime_error("Client-pushed reply overwriting existing saved reply");
+					// the interrupted call gets the reply that came first
+					lock.unlock();
+					return dropPushedReply("the interrupt already has a saved reply");
 				}
 				thread->_interrupts.top().savedReply = std::move(replyToSave);
 			}
@@ -205,11 +280,9 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 	// finally, let's construct the call class
 
+	// (its size was checked above)
 	#define CALL_CASE(_callName, _className) \
 		case dserver_callnum_ ## _callName: { \
-			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
-				throw std::invalid_argument("Message buffer was too small for dserver_call_" #_callName "_t"); \
-			} \
 			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
 		} break;
 
@@ -231,6 +304,51 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		});
 		return nullptr;
 	}
+};
+
+std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Message&& requestMessage) {
+	// what the call is logged with, before callFromMessage takes the message
+	dserver_rpc_callhdr_t header = {};
+	memcpy(&header, requestMessage.data().data(), std::min(sizeof(header), requestMessage.data().size()));
+	pid_t senderPID = requestMessage.pid();
+	Address replyAddress = requestMessage.address();
+	const char* name = dserver_callnum_to_string(header.number);
+
+	try {
+		return callFromMessage(std::move(requestMessage));
+	} catch (const ProtocolError& e) {
+		// One client's malformed or out-of-order call mustn't take down every process: drop the call and go on.
+		callLog.error() << "Dropped call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+
+		// a push dropped before it was looked at still has its pipe: wake the client with it
+		if (header.number == dserver_callnum_push_reply && !requestMessage.descriptors().empty()) {
+			int pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+			if (pipeDesc >= 0) {
+				char dropped = DSERVER_PUSH_REPLY_DROPPED;
+				write(pipeDesc, &dropped, sizeof(dropped));
+				close(pipeDesc);
+			}
+		}
+
+		// so that the caller doesn't wait for ever: an S2C reply and a push aren't answered with a reply
+		if (e.replyCode() != 0 && header.number != dserver_callnum_s2c && header.number != dserver_callnum_push_reply) {
+			sendErrorReply(replyAddress, header.number, e.replyCode());
+		}
+	} catch (const std::exception& e) {
+		// darlingserver's own invariant: say so, and end it, as XNU panics
+		callLog.error() << "Internal error on call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+		throw;
+	}
+	return nullptr;
+};
+
+void DarlingServer::Call::sendErrorReply(Address replyAddress, uint32_t callNumber, int code) {
+	Message reply(sizeof(dserver_rpc_replyhdr_t), 0);
+	reply.setAddress(replyAddress);
+	auto replyHeader = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
+	replyHeader->number = static_cast<dserver_callnum_t>(callNumber);
+	replyHeader->code = code;
+	sendReply(std::move(reply));
 };
 
 DarlingServer::Call::Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader):
@@ -845,6 +963,17 @@ void DarlingServer::Call::InterruptEnter::processCall() {
 
 void DarlingServer::Call::InterruptExit::processCall() {
 	auto thread = _thread.lock();
+
+	{
+		std::shared_lock lock(thread->_rwlock);
+		if (thread->_interrupts.empty()) {
+			// an interrupt_exit without its interrupt_enter: there's no interrupt, nor a saved user state, to pop
+			lock.unlock();
+			callLog.error() << *thread << ": interrupt_exit without an interrupt" << callLog.endLog;
+			_sendReply(-EINVAL);
+			return;
+		}
+	}
 
 	dtape_thread_sigexc_exit(thread->_dtapeThread);
 

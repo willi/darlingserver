@@ -64,9 +64,17 @@ namespace DarlingServer {
 				return (*it2).second;
 			}
 
-			_registeringWithLockHeld = true;
-			auto entry = entryFactory();
-			_registeringWithLockHeld = false;
+			// cleared however the factory leaves, a throw too: left set, every later lookup on this thread would skip
+			// the lock
+			struct LockHeldFlag {
+				LockHeldFlag() { _registeringWithLockHeld = true; };
+				~LockHeldFlag() { _registeringWithLockHeld = false; };
+			};
+			std::shared_ptr<Entry> entry;
+			{
+				LockHeldFlag flag;
+				entry = entryFactory();
+			}
 
 			if (!entry) {
 				return nullptr;

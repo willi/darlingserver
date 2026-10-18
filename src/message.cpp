@@ -24,6 +24,11 @@
 #include <new>
 #include <mutex>
 #include <system_error>
+#include <cstring>
+#include <string>
+#include <darlingserver/logging.hpp>
+
+static DarlingServer::Log messageLog("message");
 
 DarlingServer::Address::Address() {
 	_address.sun_family = AF_UNIX;
@@ -544,7 +549,16 @@ bool DarlingServer::MessageQueue::sendMany(int socket) {
 				_messages.pop_front();
 				ret = 0;
 			} else {
-				throw std::system_error(errno, std::generic_category(), "Failed to send messages through socket");
+				// Any other error is the first message's (ENOENT: the name its peer's socket was bound to is gone, so
+				// nothing can reach it, though the peer may live; EMSGSIZE, ENOBUFS, EACCES): drop it and try the
+				// others, rather than end darlingserver for every process. Unlike a dead peer, its thread may be
+				// waiting for it, so say so.
+				int error = errno;
+				auto peer = _messages.front().address();
+				auto& address = peer.raw();
+				messageLog.warning() << "Dropped a message to " << ((address.sun_path[0] == '\0') ? "an unnamed socket" : std::string(address.sun_path, strnlen(address.sun_path, sizeof(address.sun_path)))) << ": " << strerror(error) << messageLog.endLog;
+				_messages.pop_front();
+				ret = 0;
 			}
 		}
 
