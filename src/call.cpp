@@ -89,6 +89,17 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	#undef CALL_CASE
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
+		// A push, an S2C reply and an interrupt_exit only make sense from a thread that has made calls before (an
+		// interrupt_enter, an S2C call): don't register a process or thread for one. A push from a thread that had
+		// checked out registered a Thread nobody would check out, which a later thread of another process with the
+		// same TID would have found.
+		if (header->number == dserver_callnum_push_reply || header->number == dserver_callnum_s2c || header->number == dserver_callnum_interrupt_exit) {
+			auto knownThread = threadRegistry().lookupEntryByNSID(header->tid);
+			if (!knownThread || !(*knownThread)->process() || (*knownThread)->process()->nsid() != header->pid) {
+				throw ProtocolError("Call from a thread darlingserver doesn't know", -ESRCH);
+			}
+		}
+
 		// now let's lookup (and possibly create) the process and thread making this call
 		process = processRegistry().registerIfAbsent(header->pid, [&]() {
 			std::shared_ptr<Process> tmp = nullptr;
@@ -288,6 +299,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Messag
 	} catch (const ProtocolError& e) {
 		// One client's malformed or out-of-order call mustn't take down every process: drop the call and go on.
 		callLog.error() << "Dropped call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+
+		// a push dropped before it was looked at still has its pipe: wake the client with it
+		if (header.number == dserver_callnum_push_reply && !requestMessage.descriptors().empty()) {
+			int pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+			if (pipeDesc >= 0) {
+				char tmp = 1;
+				write(pipeDesc, &tmp, sizeof(tmp));
+				close(pipeDesc);
+			}
+		}
 
 		// so that the caller doesn't wait for ever: an S2C reply and a push aren't answered with a reply
 		if (e.replyCode() != 0 && header.number != dserver_callnum_s2c && header.number != dserver_callnum_push_reply) {
