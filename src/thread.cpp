@@ -1106,13 +1106,18 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 
 	// partially validate the reply
 
+	// The size and number are the client's: a wrong one fails this S2C call, as an interrupted one does. Throwing
+	// here would unwind a microthread through duct-tape's C frames (XNU code, perhaps holding locks), or end
+	// darlingserver.
 	if (reply->data().size() != expectedReplySize) {
-		throw std::runtime_error("Invalid S2C reply: unxpected size");
+		s2cLog.error() << *this << ": Invalid S2C reply: unexpected size " << reply->data().size() << " (expected " << expectedReplySize << "); failing the S2C call" << s2cLog.endLog;
+		return std::nullopt;
 	}
 
 	auto replyHeader = reinterpret_cast<dserver_s2c_replyhdr_t*>(reply->data().data());
 	if (replyHeader->s2c_number != expectedReplyNumber) {
-		throw std::runtime_error("Invalid S2C reply: unexpected S2C reply number");
+		s2cLog.error() << *this << ": Invalid S2C reply: unexpected S2C reply number " << replyHeader->s2c_number << " (expected " << expectedReplyNumber << "); failing the S2C call" << s2cLog.endLog;
+		return std::nullopt;
 	}
 
 	return std::move(*reply);
@@ -1370,7 +1375,10 @@ void DarlingServer::Thread::pushCallReply(std::shared_ptr<Call> expectedCall, Me
 
 	if (_interruptedForSignal) {
 		if (_interrupts.top().savedReply) {
-			throw std::runtime_error("New reply would overwrite existing saved reply");
+			// a client pushed a reply for the interrupted call already (a fork child's handler on its parent's
+			// socket made one): the interrupted call gets the reply that came first, as for two pushes
+			microthreadLog.error() << *this << ": New reply would overwrite existing saved reply; dropped it" << microthreadLog.endLog;
+			return;
 		}
 
 		_interrupts.top().savedReply = std::move(reply);
@@ -1530,10 +1538,11 @@ void DarlingServer::Thread::_handleInterruptEnterForCurrentThread() {
 
 		if (currentThreadVar->_pendingSavedReply) {
 			if (currentThreadVar->_interrupts.top().savedReply) {
-				throw std::runtime_error("Pending saved reply would overwrite saved reply");
+				// the reply that came first stays
+				microthreadLog.error() << *currentThreadVar << ": Pending saved reply would overwrite saved reply; dropped it" << microthreadLog.endLog;
+			} else {
+				currentThreadVar->_interrupts.top().savedReply = std::move(*currentThreadVar->_pendingSavedReply);
 			}
-
-			currentThreadVar->_interrupts.top().savedReply = std::move(*currentThreadVar->_pendingSavedReply);
 			currentThreadVar->_pendingSavedReply = std::nullopt;
 		}
 
