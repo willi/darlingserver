@@ -190,6 +190,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	if (header->number == dserver_callnum_s2c) {
 		// this is an S2C reply
 
+		// (taken under the lock: a released thread has none, see Thread::_scheduleRelease())
+		dtape_semaphore_t* replySemaphore;
 		{
 			std::unique_lock lock(thread->_rwlock);
 
@@ -198,9 +200,16 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			}
 
 			thread->_s2cReply = std::move(requestMessage);
+			replySemaphore = thread->_s2cReplySempahore;
+			if (replySemaphore) {
+				dtape_semaphore_retain(replySemaphore);
+			}
 		}
 
-		dtape_semaphore_up(thread->_s2cReplySempahore);
+		if (replySemaphore) {
+			dtape_semaphore_up(replySemaphore);
+			dtape_semaphore_release(replySemaphore);
+		}
 
 		return nullptr;
 	} else if (header->number == dserver_callnum_push_reply) {
@@ -508,6 +517,19 @@ void DarlingServer::Call::Checkout::processCall() {
 		}
 	} else {
 		code = -ESRCH;
+	}
+
+	// The call is over: when the thread returns to the top of its microthread, a dead one with no active call is
+	// released (doneWorking). Reset below, `_thread` no longer lets the reply deactivate it (pushCallReply()), and a
+	// thread that had checked out stayed, with its duct-taped thread (still in its task's thread list) and its
+	// stack, for ever.
+	// Not the main thread: its Linux thread stays (mldr parks it, as dispatch_main() leaves it), and so does the
+	// process, which has no other thread of ours until it starts one; with its last thread gone, darlingserver would
+	// take it for dead (~Thread). It is released when the process dies (notifyProcessDead()).
+	// The thread held the call's only reference (its active call): `self` keeps it until the reply is sent.
+	auto self = shared_from_this();
+	if (auto thread = _thread.lock(); thread && thread->activeCall().get() == this && thread->process() && thread->id() != thread->process()->id()) {
+		thread->deactivateCall(self);
 	}
 
 	// clear the thread pointer so that the reply will be sent directly through the server

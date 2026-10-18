@@ -116,6 +116,7 @@ namespace DarlingServer {
 		std::queue<std::shared_ptr<Call>> _pendingInterrupts;
 		std::optional<Message> _pendingSavedReply = std::nullopt;
 		bool _dead = false;
+		bool _releaseScheduled = false;
 		std::shared_ptr<Thread> _selfReference = nullptr;
 
 		static void microthreadWorker();
@@ -266,6 +267,12 @@ namespace DarlingServer {
 		 */
 		void notifyDead();
 		bool isDead() const;
+
+		/**
+		 * Informs this Thread instance that its process has died: one that died before it is released now, if its
+		 * microthread is done with it (a main thread that checked out stays until its process ends).
+		 */
+		void notifyProcessDead();
 
 		/**
 		 * @note Only to be used by direct XNU traps! (e.g. Mach IPC, psynch, etc.)

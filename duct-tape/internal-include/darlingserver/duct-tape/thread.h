@@ -40,6 +40,8 @@ struct dtape_thread {
 	bool waiting_suspended;
 	// set once, by dtape_thread_dying(): a thread_wait() for it returns (under suspension_mutex, with waiting_suspended)
 	bool dying;
+	// set by dtape_thread_dying(), under the task lock: the thread is off its task's thread list (task_threads())
+	bool off_task_list;
 	dtape_mutex_t suspension_mutex;
 
 	// held from thread_block() deciding to suspend until the thread has suspended, and by thread_unblock() around its

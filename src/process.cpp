@@ -843,7 +843,7 @@ void DarlingServer::Process::notifyDead() {
 		if (!thread) {
 			continue;
 		}
-		thread->notifyDead();
+		thread->notifyProcessDead();
 	}
 
 	// schedule the duct-taped task to be terminated and released
@@ -864,10 +864,11 @@ void DarlingServer::Process::notifyDead() {
 		self->_dtapeTask = nullptr;
 
 		// That was normally the last reference, and destroying the task disposed of us. A reference left over keeps the
-		// task and this process alive for good. One we haven't accounted for is left when the main thread exited
-		// before the process did, as dispatch_main() does (launchd_sim and cfprefsd among others).
+		// task and this process alive for good. The main thread that exited before the process did, as dispatch_main()
+		// makes it (launchd_sim and cfprefsd among others), held one until Thread::notifyProcessDead() released it; its
+		// release may still be on its way here, and drops its reference when it runs.
 		if (self->_selfReference) {
-			processLog.warning() << *self << ": task still referenced after the process died; leaking it" << processLog.endLog;
+			processLog.warning() << *self << ": task still referenced after the process died: by a dead thread whose release hasn't run yet, or else leaked" << processLog.endLog;
 		}
 	});
 

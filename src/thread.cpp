@@ -47,6 +47,7 @@
 #include <sys/user.h>
 #include <sys/wait.h>
 #include <vector>
+#include <utility>
 
 // 64KiB should be enough for us
 #define THREAD_STACK_SIZE (64 * 1024ULL)
@@ -1023,9 +1024,30 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	std::optional<Message> reply = std::nullopt;
 	bool usingInterrupt = false;
 
+	// The thread may die while we wait for it (one that is checking out has darlingserver's signals blocked, and
+	// never gives the green light): its release destroys these, which ends our waits. Retained, they stay valid here
+	// until we're done with them.
+	struct RetainedSemaphore {
+		dtape_semaphore_t* semaphore = nullptr;
+		~RetainedSemaphore() { if (semaphore) dtape_semaphore_release(semaphore); };
+	} performSemaphore, replySemaphore, enterSemaphore, exitSemaphore;
+	{
+		std::shared_lock lock(_rwlock);
+		if (_dead || !_s2cPerformSempahore || !_s2cReplySempahore || !_s2cInterruptEnterSemaphore || !_s2cInterruptExitSemaphore) {
+			throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that has died");
+		}
+		for (auto [retained, semaphore]: { std::pair{&performSemaphore, _s2cPerformSempahore}, std::pair{&replySemaphore, _s2cReplySempahore}, std::pair{&enterSemaphore, _s2cInterruptEnterSemaphore}, std::pair{&exitSemaphore, _s2cInterruptExitSemaphore} }) {
+			dtape_semaphore_retain(semaphore);
+			retained->semaphore = semaphore;
+		}
+	}
+
 	// make sure we're the only one performing an S2C call on this thread
-	if (!dtape_semaphore_down_simple(_s2cPerformSempahore)) {
+	if (!dtape_semaphore_down_simple(performSemaphore.semaphore)) {
 		// got interrupted while waiting
+		if (isDead()) {
+			throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that has died");
+		}
 		return std::nullopt;
 	}
 
@@ -1040,9 +1062,13 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 			s2cLog.debug() << *this << ": Sending S2C signal" << s2cLog.endLog;
 			usingInterrupt = true;
 			sendSignal(LINUX_SIGRTMIN + 1);
-			if (!dtape_semaphore_down_simple(_s2cInterruptEnterSemaphore)) {
+			if (!dtape_semaphore_down_simple(enterSemaphore.semaphore)) {
 				// got interrupted while waiting
-				dtape_semaphore_up(_s2cPerformSempahore);
+				dtape_semaphore_up(performSemaphore.semaphore);
+				if (isDead()) {
+					// it never got the call
+					throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that died before taking it");
+				}
 				return std::nullopt;
 			}
 			s2cLog.debug() << *this << ": Got green light to perform S2C call" << s2cLog.endLog;
@@ -1060,7 +1086,7 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	// at least for now, in order to wait for the S2C reply, we need the calling thread to be a microthread,
 	// so that waiting on the duct-taped semaphore will work
 	if (!currentThread()) {
-		dtape_semaphore_up(_s2cPerformSempahore);
+		dtape_semaphore_up(performSemaphore.semaphore);
 		throw std::runtime_error("Must be in a microthread (any microthread) to wait for S2C reply");
 	}
 
@@ -1070,9 +1096,9 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	Server::sharedInstance().sendMessage(std::move(call));
 
 	// now let's wait for the reply
-	if (!dtape_semaphore_down_simple(_s2cReplySempahore)) {
+	if (!dtape_semaphore_down_simple(replySemaphore.semaphore)) {
 		// got interrupted while waiting
-		dtape_semaphore_up(_s2cPerformSempahore);
+		dtape_semaphore_up(performSemaphore.semaphore);
 		return std::nullopt;
 	}
 
@@ -1084,7 +1110,7 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 
 		if (!_s2cReply) {
 			// impossible, but just in case
-			dtape_semaphore_up(_s2cPerformSempahore);
+			dtape_semaphore_up(performSemaphore.semaphore);
 			throw std::runtime_error("S2C reply semaphore incremented, but no reply present");
 		}
 
@@ -1104,13 +1130,13 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	s2cLog.debug() << *this << ": Done performing S2C call" << s2cLog.endLog;
 
 	// we're done performing the call; allow others to have a chance at performing an S2C call on this thread
-	dtape_semaphore_up(_s2cPerformSempahore);
+	dtape_semaphore_up(performSemaphore.semaphore);
 
 	if (usingInterrupt) {
 		// if we used the S2C signal to perform the call, then the s2c_perform call is currently waiting for us to finish;
 		// let it know that we're done
 		s2cLog.debug() << *this << ": Allowing thread to resume from S2C interrupt" << s2cLog.endLog;
-		dtape_semaphore_up(_s2cInterruptExitSemaphore);
+		dtape_semaphore_up(exitSemaphore.semaphore);
 	}
 
 	// partially validate the reply
@@ -1526,6 +1552,22 @@ void DarlingServer::Thread::_answerUnprocessedCallsLocked(bool includingPendingC
 	}
 };
 
+void DarlingServer::Thread::notifyProcessDead() {
+	notifyDead();
+
+	bool release;
+	{
+		std::unique_lock lock(_rwlock);
+		// dead before its process, and back at the top of its microthread (neither running nor suspended in its call):
+		// nothing will run it again, and doneWorking didn't release it, as its call was left active
+		release = _dead && !_running && !_suspended && !_releaseScheduled && _activeCall;
+	}
+	if (release) {
+		threadLog.debug() << *this << ": died before its process; releasing it with the process" << threadLog.endLog;
+		_scheduleRelease();
+	}
+};
+
 bool DarlingServer::Thread::isDead() const {
 	std::shared_lock lock(_rwlock);
 	return _dead;
@@ -1537,25 +1579,32 @@ void DarlingServer::Thread::_dispose() {
 };
 
 void DarlingServer::Thread::_scheduleRelease() {
+	{
+		// once: both doneWorking and notifyProcessDead() may get here
+		std::unique_lock lock(_rwlock);
+		if (_releaseScheduled) {
+			return;
+		}
+		_releaseScheduled = true;
+	}
+
 	// schedule the duct-taped thread to be released
 	// dtape_thread_release needs a microthread context, so we call it within a kernel microthread
 	threadLog.debug() << *this << ": scheduling release" << threadLog.endLog;
 	kernelAsync([self = shared_from_this()]() {
-		if (self->_s2cPerformSempahore) {
-			dtape_semaphore_destroy(self->_s2cPerformSempahore);
-			self->_s2cPerformSempahore = nullptr;
+		// taken under the lock, as _s2cPerform() retains them; destroying one ends its waits there
+		dtape_semaphore_t* semaphores[4];
+		{
+			std::unique_lock lock(self->_rwlock);
+			semaphores[0] = std::exchange(self->_s2cPerformSempahore, nullptr);
+			semaphores[1] = std::exchange(self->_s2cReplySempahore, nullptr);
+			semaphores[2] = std::exchange(self->_s2cInterruptEnterSemaphore, nullptr);
+			semaphores[3] = std::exchange(self->_s2cInterruptExitSemaphore, nullptr);
 		}
-		if (self->_s2cReplySempahore) {
-			dtape_semaphore_destroy(self->_s2cReplySempahore);
-			self->_s2cReplySempahore = nullptr;
-		}
-		if (self->_s2cInterruptEnterSemaphore) {
-			dtape_semaphore_destroy(self->_s2cInterruptEnterSemaphore);
-			self->_s2cInterruptEnterSemaphore = nullptr;
-		}
-		if (self->_s2cInterruptExitSemaphore) {
-			dtape_semaphore_destroy(self->_s2cInterruptExitSemaphore);
-			self->_s2cInterruptExitSemaphore = nullptr;
+		for (auto semaphore: semaphores) {
+			if (semaphore) {
+				dtape_semaphore_destroy(semaphore);
+			}
 		}
 		dtape_thread_release(self->_dtapeThread);
 		self->_dtapeThread = nullptr;

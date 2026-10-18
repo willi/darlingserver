@@ -49,7 +49,10 @@ void dtape_semaphore_release(dtape_semaphore_t* semaphore) {
 };
 
 void dtape_semaphore_up(dtape_semaphore_t* semaphore) {
-	if (semaphore_signal(semaphore->xnu_semaphore) != KERN_SUCCESS) {
+	// one destroyed while its user still held a reference (dtape_semaphore_retain()) has no one to wake: XNU's
+	// semaphore_signal() answers KERN_TERMINATED
+	kern_return_t kr = semaphore_signal(semaphore->xnu_semaphore);
+	if (kr != KERN_SUCCESS && kr != KERN_TERMINATED) {
 		panic("Failed to raise up-count of duct-taped XNU semaphore");
 	}
 };
@@ -87,6 +90,9 @@ bool dtape_semaphore_down_simple(dtape_semaphore_t* semaphore) {
 		case KERN_SUCCESS:
 			return true;
 		case KERN_ABORTED:
+		// destroyed, while its user still held a reference (dtape_semaphore_retain()), before or during the wait: XNU's
+		// semaphore_wait() answers KERN_TERMINATED. Like an interruption, the wait is over without the semaphore.
+		case KERN_TERMINATED:
 			return false;
 		default:
 			panic("Failed to lower up-count of duct-taped XNU semaphore: %d", kr);
