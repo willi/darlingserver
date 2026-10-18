@@ -241,10 +241,17 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 		{
 			std::unique_lock lock(thread->_rwlock);
-			if (thread->_pendingCall && thread->_pendingCall->number() == Call::Number::InterruptEnter) {
+			if ((thread->_pendingCall && thread->_pendingCall->number() == Call::Number::InterruptEnter) || !thread->_pendingInterrupts.empty()) {
 				// this means the client got interrupted after we had already sent a reply for the interrupted call,
 				// the client saw this unexpected reply while waiting for interrupt_enter to respond and sent it back to us,
-				// and we received both calls (interrupt_enter and push_reply) at the same time
+				// and we received both calls (interrupt_enter and push_reply) at the same time.
+				// The interrupt_enter may also still be queued behind the call it interrupted (setPendingCall), which
+				// has replied but not yet returned to the top of its microthread.
+				if (thread->_pendingSavedReply) {
+					// the interrupted call gets the reply that came first
+					lock.unlock();
+					return dropPushedReply("the pending interrupt already has a saved reply");
+				}
 				thread->_pendingSavedReply = std::move(replyToSave);
 			} else {
 				if (thread->_interrupts.empty()) {
