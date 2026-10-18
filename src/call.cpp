@@ -35,6 +35,16 @@ static DarlingServer::Log callLog("calls");
 
 DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
 
+// The largest reply of any call. (The generated DSERVER_RPC_REPLY_MAX_LENGTH nests a max() macro once per call, so its
+// expansion doubles with each: the compiler runs out of memory on it.)
+static constexpr size_t maxReplySize() {
+	size_t max = 0;
+	#define CALL_CASE(_callName, _className) max = std::max(max, sizeof(dserver_rpc_reply_ ## _callName ## _t))
+	DSERVER_CONSTRUCT_CASES
+	#undef CALL_CASE
+	return max;
+}
+
 std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
 		throw ProtocolError("Message buffer was too small for call header");
@@ -45,17 +55,38 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	std::shared_ptr<Process> process = nullptr;
 	std::shared_ptr<Thread> thread = nullptr;
 
-	// first, make sure we know this call number
+	// first, make sure we know this call number, and that the message is large enough for its call, before anything
+	// changes for the thread that sent it
+	#define CALL_CASE(_callName, _className) \
+		case dserver_callnum_ ## _callName: { \
+			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
+				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t", -EINVAL); \
+			} \
+		} break;
+
 	switch (header->number) {
 		case dserver_callnum_s2c:
-		case dserver_callnum_push_reply:
-		DSERVER_VALID_CALLNUM_CASES
 			break;
+
+		case dserver_callnum_push_reply: {
+			if (requestMessage.data().size() < sizeof(dserver_rpc_call_push_reply_t)) {
+				throw ProtocolError("Message buffer was too small for dserver_rpc_call_push_reply_t");
+			}
+			// the reply is allocated and read before it's saved: no larger than any reply
+			auto pushReplyCall = reinterpret_cast<const dserver_rpc_call_push_reply_t*>(header);
+			if (pushReplyCall->reply_size > maxReplySize()) {
+				throw ProtocolError("Pushed reply larger than any reply");
+			}
+		} break;
+
+		DSERVER_CONSTRUCT_CASES
 
 		default:
 			// as XNU's ipc_kobject_server() answers MIG_BAD_ID, and unix_syscall() nosys
 			throw ProtocolError("Invalid call number", -ENOSYS);
 	}
+
+	#undef CALL_CASE
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
 		// now let's lookup (and possibly create) the process and thread making this call
@@ -154,7 +185,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		Message replyToSave(pushReplyCall->reply_size, 0);
 
 		// extract the reply-push synchronization pipe
-		auto pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
+		auto pipeDesc = requestMessage.descriptors().empty() ? -1 : requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
 		char tmp = 1;
 
 		if (pipeDesc < 0) {
@@ -215,11 +246,9 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 	// finally, let's construct the call class
 
+	// (its size was checked above)
 	#define CALL_CASE(_callName, _className) \
 		case dserver_callnum_ ## _callName: { \
-			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
-				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t", -EINVAL); \
-			} \
 			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
 		} break;
 
