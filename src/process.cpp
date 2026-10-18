@@ -889,6 +889,10 @@ std::vector<uint32_t> DarlingServer::Process::groups() const {
 	return _groups;
 };
 
+DarlingServer::Memorystatus::State& DarlingServer::Process::memorystatus() {
+	return _memorystatus;
+};
+
 void DarlingServer::Process::setGroups(const std::vector<uint32_t>& groups) {
 	std::unique_lock lock(_rwlock);
 	_groups = groups;

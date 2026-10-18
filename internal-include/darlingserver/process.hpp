@@ -35,6 +35,7 @@
 #include <darlingserver/rpc.h>
 #include <darlingserver/logging.hpp>
 #include <darlingserver/registry.hpp>
+#include <darlingserver/memorystatus.hpp>
 
 struct DTapeHooks;
 
@@ -119,6 +120,7 @@ namespace DarlingServer {
 		bool _dead = false;
 		std::shared_ptr<Process> _selfReference = nullptr;
 		std::vector<uint32_t> _groups;
+		Memorystatus::State _memorystatus;
 
 #if DSERVER_EXTENDED_DEBUG
 		std::unordered_map<uint32_t, uintptr_t> _registeredNames;
@@ -248,6 +250,12 @@ namespace DarlingServer {
 
 		std::vector<uint32_t> groups() const;
 		void setGroups(const std::vector<uint32_t>& groups);
+
+		/**
+		 * memorystatus_control()'s state for this process (see memorystatus.hpp), which goes on across exec. Only
+		 * with the memorystatus lock held.
+		 */
+		Memorystatus::State& memorystatus();
 	};
 };
 
