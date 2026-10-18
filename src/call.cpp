@@ -105,6 +105,14 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 			tmp->setAddress(requestMessage.address());
 			tmp->registerWithProcess();
+
+			// Every thread's first call is its checkin: mldr's at process start and thread start, a fork child's. A
+			// thread registered by another call is a client bug, most likely a signal handler that ran before the
+			// thread had checked in on its own socket, or after it had checked out. Nothing else does it, so it's
+			// logged as an error, which the default log level shows.
+			if (header->number != dserver_callnum_checkin) {
+				callLog.error() << "Thread " << header->tid << " of PID " << header->pid << " made call #" << header->number << " (" << dserver_callnum_to_string(header->number) << ") without checking in first (a signal handler before its checkin or after its checkout?)" << callLog.endLog;
+			}
 			return tmp;
 		});
 
