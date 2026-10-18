@@ -351,6 +351,10 @@ void DarlingServer::Call::sendErrorReply(Address replyAddress, uint32_t callNumb
 	sendReply(std::move(reply));
 };
 
+void DarlingServer::Call::sendErrorReply(int code) {
+	sendErrorReply(_replyAddress, _header.number, code);
+};
+
 DarlingServer::Call::Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader):
 	_thread(thread),
 	_replyAddress(replyAddress),
