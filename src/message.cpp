@@ -538,8 +538,9 @@ bool DarlingServer::MessageQueue::sendMany(int socket) {
 				break;
 			} else if (errno == EINTR) {
 				ret = 0;
-			} else if (errno == EPIPE || errno == ECONNREFUSED) {
-				// this means that peer of the first message we tried to send has died.
+			} else if (errno == EPIPE || errno == ECONNREFUSED || errno == ENOENT) {
+				// this means that peer of the first message we tried to send has died
+				// (or, for ENOENT, the name its socket was bound to is gone: nothing can reach it).
 				// we'll just drop that message and try the others.
 				_messages.pop_front();
 				ret = 0;
