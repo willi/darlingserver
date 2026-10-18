@@ -702,6 +702,12 @@ calls = [
 		('message_count', 'uint64_t'),
 		('fd', '@fd'),
 	], UNMANAGED_CALL),
+
+	# whether a kprintf call's string reaches darlingserver's log; it doesn't change while darlingserver runs,
+	# so a client asks once and skips the kprintf calls that would be dropped
+	('kprintf_logged', [], [
+		('logged', 'bool'),
+	]),
 ]
 
 ALLOWED_PRIVATE_TYPES = [

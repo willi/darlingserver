@@ -560,8 +560,9 @@ void DarlingServer::Call::MachReplyPort::processCall() {
 	_sendReply(0, machReplyPort);
 };
 
+static DarlingServer::Log kprintfLog("kprintf");
+
 void DarlingServer::Call::Kprintf::processCall() {
-	static auto kprintfLog = Log("kprintf");
 	int code = 0;
 
 	if (auto thread = _thread.lock()) {
@@ -596,6 +597,10 @@ void DarlingServer::Call::Kprintf::processCall() {
 	}
 
 	_sendReply(code);
+};
+
+void DarlingServer::Call::KprintfLogged::processCall() {
+	_sendReply(0, kprintfLog.infoLogged());
 };
 
 void DarlingServer::Call::StartedSuspended::processCall() {

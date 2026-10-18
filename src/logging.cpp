@@ -98,20 +98,21 @@ std::string DarlingServer::Log::_typeToString(Type type) {
 	}
 };
 
-void DarlingServer::Log::_log(Type type, std::string message) const {
-	// NOTE: we use POSIX file APIs because we want to append each message to the log file atomically,
-	//       and as far as i can tell, C++ fstreams provide no such guarantee (that they won't write in chunks).
+// NOTE: we use POSIX file APIs because we want to append each message to the log file atomically,
+//       and as far as i can tell, C++ fstreams provide no such guarantee (that they won't write in chunks).
+static int logFileDescriptor() {
 	static int logFile = []() {
-		std::filesystem::path path(Server::sharedInstance().prefix() + "/private/var/log/dserver.log");
+		std::filesystem::path path(DarlingServer::Server::sharedInstance().prefix() + "/private/var/log/dserver.log");
 		std::filesystem::create_directories(path.parent_path());
 		return open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	}();
+	return logFile;
+};
 
-	static bool logToStderr = []() {
-		auto val = getenv("DSERVER_LOG_STDERR");
-		return val && strlen(val) >= 1 && (val[0] == 't' || val[0] == 'T' || val[0] == '1');
-	}();
-
+// The log level and categories are read from the environment once, so whether a message is logged never changes
+// while darlingserver runs. libsystem_kernel relies on that: it asks kprintf_logged once per process and caches the
+// answer. A way to change the level at run time must make clients ask again.
+bool DarlingServer::Log::_willLog(Type type) const {
 	static Type logMinLevel = []() {
 		auto val = getenv("DSERVER_LOG_LEVEL");
 		Type level = DEFAULT_LOG_CUTOFF;
@@ -137,9 +138,24 @@ void DarlingServer::Log::_log(Type type, std::string message) const {
 
 	bool debugCategory = !debugCategories.empty() && debugCategories.find("," + _category + ",") != std::string::npos;
 
-	if ((type < logMinLevel && !_alwaysLog && !debugCategory) || logFile < 0) {
+	return (type >= logMinLevel || _alwaysLog || debugCategory) && logFileDescriptor() >= 0;
+};
+
+bool DarlingServer::Log::infoLogged() const {
+	return _willLog(Type::Info);
+};
+
+void DarlingServer::Log::_log(Type type, std::string message) const {
+	static bool logToStderr = []() {
+		auto val = getenv("DSERVER_LOG_STDERR");
+		return val && strlen(val) >= 1 && (val[0] == 't' || val[0] == 'T' || val[0] == '1');
+	}();
+
+	if (!_willLog(type)) {
 		return;
 	}
+
+	int logFile = logFileDescriptor();
 
 	struct timespec time;
 	clock_gettime(CLOCK_REALTIME, &time);

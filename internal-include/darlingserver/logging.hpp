@@ -42,6 +42,7 @@ namespace DarlingServer {
 		};
 
 		void _log(Type type, std::string message) const;
+		bool _willLog(Type type) const;
 		static std::string _typeToString(Type type);
 
 	public:
@@ -61,6 +62,9 @@ namespace DarlingServer {
 		Stream info() const;
 		Stream warning() const;
 		Stream error() const;
+
+		// whether info() messages reach the log
+		bool infoLogged() const;
 	};
 
 	class Loggable {
