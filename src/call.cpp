@@ -963,6 +963,17 @@ void DarlingServer::Call::InterruptEnter::processCall() {
 void DarlingServer::Call::InterruptExit::processCall() {
 	auto thread = _thread.lock();
 
+	{
+		std::shared_lock lock(thread->_rwlock);
+		if (thread->_interrupts.empty()) {
+			// an interrupt_exit without its interrupt_enter: there's no interrupt, nor a saved user state, to pop
+			lock.unlock();
+			callLog.error() << *thread << ": interrupt_exit without an interrupt" << callLog.endLog;
+			_sendReply(-EINVAL);
+			return;
+		}
+	}
+
 	dtape_thread_sigexc_exit(thread->_dtapeThread);
 
 	_sendReply(0);
