@@ -433,8 +433,21 @@ void dtape_thread_release(dtape_thread_t* thread) {
 	thread_deallocate(&thread->xnu_thread);
 };
 
+// thread locked. As XNU does: a timed wait that ended otherwise must not time out a later wait
+static void cancel_wait_timer(thread_t xthread) {
+	if (xthread->wait_timer_is_set) {
+		if (timer_call_cancel(&xthread->wait_timer)) {
+			xthread->wait_timer_active--;
+		}
+		xthread->wait_timer_is_set = FALSE;
+	}
+};
+
 void dtape_thread_sigexc_enter(dtape_thread_t* thread) {
 	thread_lock(&thread->xnu_thread);
+	// clear_wait_internal() below doesn't unblock the thread (TH_WAIT is already clear), which is what cancels
+	// the timer of a timed wait; left set, it would end whatever the thread waits for next, up to its timeout later
+	cancel_wait_timer(&thread->xnu_thread);
 	thread->xnu_thread.state &= ~(TH_UNINT | TH_WAIT);
 	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
 	clear_wait_internal(&thread->xnu_thread, THREAD_INTERRUPTED);
@@ -467,6 +480,7 @@ void dtape_thread_sigexc_exit(dtape_thread_t* thread) {
 
 void dtape_thread_dying(dtape_thread_t* thread) {
 	thread_lock(&thread->xnu_thread);
+	cancel_wait_timer(&thread->xnu_thread);
 	thread->xnu_thread.state &= ~(TH_UNINT | TH_WAIT);
 	thread->xnu_thread.state |= TH_TERMINATE;
 	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
@@ -560,13 +574,7 @@ wait_result_t thread_block(thread_continue_t continuation) {
 boolean_t thread_unblock(thread_t xthread, wait_result_t wresult) {
 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
 	thread->xnu_thread.wait_result = wresult;
-	// as XNU does: a timed wait that ended otherwise must not time out a later wait
-	if (thread->xnu_thread.wait_timer_is_set) {
-		if (timer_call_cancel(&thread->xnu_thread.wait_timer)) {
-			thread->xnu_thread.wait_timer_active--;
-		}
-		thread->xnu_thread.wait_timer_is_set = FALSE;
-	}
+	cancel_wait_timer(&thread->xnu_thread);
 	// as XNU does: the wait is over, so a thread_block() that hasn't checked TH_WAIT yet must not suspend
 	// (atomically: see dtape_thread_entering())
 	__atomic_and_fetch(&thread->xnu_thread.state, ~(TH_WAIT | TH_UNINT), __ATOMIC_SEQ_CST);

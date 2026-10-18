@@ -28,6 +28,7 @@
 #include <regex>
 
 #include <sys/mman.h>
+#include <poll.h>
 
 static DarlingServer::Log processLog("process");
 
@@ -282,85 +283,20 @@ bool DarlingServer::Process::writeMemory(uintptr_t remoteAddress, const void* lo
 	return _readOrWriteMemory(true, remoteAddress, const_cast<void*>(localBuffer), length, errorCode);
 };
 
-void DarlingServer::Process::notifyCheckin(Architecture architecture) {
+void DarlingServer::Process::notifyCheckin(const Thread& thread, Architecture architecture, bool isFork) {
+	// every new thread checks in (mldr's elfcalls); that is neither an exec nor a new process arriving
+	if (thread.nsid() != _nspid) {
+		return;
+	}
+
 	std::unique_lock lock(_rwlock);
 
 	bool didExec = _pendingReplacement;
 
 	if (didExec) {
-		// exec case
-
-		processLog.info() << *this << ": replacing process with a new task (with architecture \"" << architectureToString(architecture) << "\")" << processLog.endLog;
-
-		// clear all threads except the main thread
-		std::shared_ptr<Thread> mainThread = nullptr;
-		while (!_threads.empty()) {
-			auto it = _threads.begin();
-			auto thread = it->second.lock();
-			lock.unlock();
-			if (thread) {
-				if (thread->_nstid == _nspid) {
-					mainThread = thread;
-				} else {
-					thread->_process = nullptr;
-					thread->notifyDead();
-				}
-			}
-			lock.lock();
-			_threads.erase(it);
-		}
-		if (!mainThread) {
-			throw std::runtime_error("Main thread for process died?");
-		}
-		_threads[mainThread->nsid()] = mainThread;
-
-		// update the process architecture
-		_architecture = architecture;
-
-		// replace the old task with a new task that inherits from it
-		auto oldTask = _dtapeTask;
-		auto newTask = dtape_task_create(oldTask, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
-		_dtapeTask = newTask;
-
-		// now replace the main thread's duct-taped thread with a new one
-		auto oldThread = mainThread->_dtapeThread;
-		auto newThread = dtape_thread_create(_dtapeTask, mainThread->_nstid, mainThread.get());
-		mainThread->_dtapeThread = newThread;
-
-		// destroy the main thread's old S2C semaphores
-		dtape_semaphore_destroy(mainThread->_s2cPerformSempahore);
-		mainThread->_s2cPerformSempahore = nullptr;
-		dtape_semaphore_destroy(mainThread->_s2cReplySempahore);
-		mainThread->_s2cReplySempahore = nullptr;
-		dtape_semaphore_destroy(mainThread->_s2cInterruptEnterSemaphore);
-		mainThread->_s2cInterruptEnterSemaphore = nullptr;
-		dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
-		mainThread->_s2cInterruptExitSemaphore = nullptr;
-
-		// destroy the fork-wait semaphore
-		dtape_semaphore_destroy(_dtapeForkWaitSemaphore);
-		_dtapeForkWaitSemaphore = nullptr;
-
-		// release the main thread's old duct-taped thread
-		dtape_thread_release(oldThread);
-
-		// release the old task
-		dtape_task_release(oldTask);
-
-		// create a new fork-wait semaphore for the new task
-		_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-
-		// create new S2C semaphores for the main thread
-		mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
-		mainThread->_s2cReplySempahore = dtape_semaphore_create(_dtapeTask, 0);
-		mainThread->_s2cInterruptEnterSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-		mainThread->_s2cInterruptExitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-	} else {
-		// fork case
-
-		if (architecture != _architecture) {
-			throw std::runtime_error("Impossible: parent process architecture != child process architecture on fork");
-		}
+		_replaceTaskAfterExec(lock, architecture);
+	} else if (isFork && architecture != _architecture) {
+		throw std::runtime_error("Impossible: parent process architecture != child process architecture on fork");
 	}
 
 	_pendingReplacement = false;
@@ -370,13 +306,86 @@ void DarlingServer::Process::notifyCheckin(Architecture architecture) {
 	if (didExec) {
 		// notify listeners that we have exec'd (i.e. been replaced)
 		_notifyListeningKqchannels(NOTE_EXEC, 0);
-	} else {
-		// notify the parent process (if we have one) that we've arrived
+	} else if (isFork) {
+		// tell the parent process (if we have one) that we've arrived: its fork() returns now, and not before,
+		// because our task copied the parent's special ports when we were registered, and the parent may change
+		// them as soon as fork() returns (launchd resets its bootstrap port)
 		if (auto parent = _parentProcess.lock()) {
-			dtape_semaphore_up(parent->_dtapeForkWaitSemaphore);
+			parent->_forkChildArrived(_nspid, _pid);
 			parent->_notifyListeningKqchannels(NOTE_FORK, nsid());
 		}
 	}
+};
+
+void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_mutex>& lock, Architecture architecture) {
+	processLog.info() << *this << ": replacing process with a new task (with architecture \"" << architectureToString(architecture) << "\")" << processLog.endLog;
+
+	// clear all threads except the main thread
+	std::shared_ptr<Thread> mainThread = nullptr;
+	while (!_threads.empty()) {
+		auto it = _threads.begin();
+		auto thread = it->second.lock();
+		lock.unlock();
+		if (thread) {
+			if (thread->_nstid == _nspid) {
+				mainThread = thread;
+			} else {
+				thread->_process = nullptr;
+				thread->notifyDead();
+			}
+		}
+		lock.lock();
+		_threads.erase(it);
+	}
+	if (!mainThread) {
+		throw std::runtime_error("Main thread for process died?");
+	}
+	_threads[mainThread->nsid()] = mainThread;
+
+	// update the process architecture
+	_architecture = architecture;
+
+	// replace the old task with a new task that inherits from it
+	auto oldTask = _dtapeTask;
+	auto newTask = dtape_task_create(oldTask, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+	_dtapeTask = newTask;
+
+	// now replace the main thread's duct-taped thread with a new one
+	auto oldThread = mainThread->_dtapeThread;
+	auto newThread = dtape_thread_create(_dtapeTask, mainThread->_nstid, mainThread.get());
+	mainThread->_dtapeThread = newThread;
+
+	// destroy the main thread's old S2C semaphores
+	dtape_semaphore_destroy(mainThread->_s2cPerformSempahore);
+	mainThread->_s2cPerformSempahore = nullptr;
+	dtape_semaphore_destroy(mainThread->_s2cReplySempahore);
+	mainThread->_s2cReplySempahore = nullptr;
+	dtape_semaphore_destroy(mainThread->_s2cInterruptEnterSemaphore);
+	mainThread->_s2cInterruptEnterSemaphore = nullptr;
+	dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
+	mainThread->_s2cInterruptExitSemaphore = nullptr;
+
+	// replace the fork-wait semaphore with one of the new task's (a fork child's arrival raises it)
+	auto newForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	dtape_semaphore_t* oldForkWaitSemaphore;
+	{
+		std::unique_lock forkLock(_forkLock);
+		oldForkWaitSemaphore = _dtapeForkWaitSemaphore;
+		_dtapeForkWaitSemaphore = newForkWaitSemaphore;
+	}
+	dtape_semaphore_destroy(oldForkWaitSemaphore);
+
+	// release the main thread's old duct-taped thread
+	dtape_thread_release(oldThread);
+
+	// release the old task
+	dtape_task_release(oldTask);
+
+	// create new S2C semaphores for the main thread
+	mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
+	mainThread->_s2cReplySempahore = dtape_semaphore_create(_dtapeTask, 0);
+	mainThread->_s2cInterruptEnterSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	mainThread->_s2cInterruptExitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
 };
 
 void DarlingServer::Process::setPendingReplacement() {
@@ -399,9 +408,113 @@ void DarlingServer::Process::unregisterKqchan(std::shared_ptr<Kqchan> kqchan) {
 	_kqchannels.erase(kqchan->_idForProcess());
 };
 
-void DarlingServer::Process::waitForChildAfterFork() {
-	// this function is always called within a microthread
-	dtape_semaphore_down_simple(_dtapeForkWaitSemaphore);
+// the ID (the PID in our namespace) of the process a pidfd refers to, or -1 if it is unknown or reaped
+static pid_t pidOfPidfd(int pidfd) {
+	std::ifstream fdinfo("/proc/self/fdinfo/" + std::to_string(pidfd));
+	std::string line;
+	while (std::getline(fdinfo, line)) {
+		if (line.rfind("Pid:", 0) == 0) {
+			try {
+				pid_t pid = std::stoi(line.substr(4));
+				// 0: in a PID namespace we can't see into
+				return (pid > 0) ? pid : -1;
+			} catch (...) {
+				return -1;
+			}
+		}
+	}
+	return -1;
+};
+
+static bool pidfdExited(int pidfd) {
+	struct pollfd pfd = { pidfd, POLLIN, 0 };
+	return poll(&pfd, 1, 0) > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR));
+};
+
+void DarlingServer::Process::_forkChildArrived(NSID child, ID childID) {
+	std::unique_lock lock(_forkLock);
+	_forkArrivals[child] = childID;
+	if (_dtapeForkWaitSemaphore) {
+		dtape_semaphore_up(_dtapeForkWaitSemaphore);
+	}
+};
+
+DarlingServer::Process::ForkWaitResult DarlingServer::Process::waitForChildAfterFork(NSID child, int childPidfd) {
+	// how often we look whether a child that hasn't checked in has died; it normally checks in within milliseconds
+	static constexpr uint64_t deathPollNs = 100ull * 1000 * 1000;
+	// without a pidfd (Linux before 5.3) we can't see the child die: give up after this long rather than hang
+	static constexpr int maxPollsWithoutPidfd = 100;
+
+	ID childID = -1;
+	if (childPidfd >= 0) {
+		childID = pidOfPidfd(childPidfd);
+		if (childID < 0 && !pidfdExited(childPidfd)) {
+			processLog.warning() << *this << ": fork wait: no PID for the pidfd of child " << child << "; going by its namespace PID" << processLog.endLog;
+		}
+	}
+
+	// timed-out waits, which are what counts without a pidfd
+	for (int polls = 0; ;) {
+		dtape_semaphore_t* semaphore;
+		bool gone = false;
+		{
+			std::unique_lock lock(_forkLock);
+			auto it = _forkArrivals.find(child);
+			if (it != _forkArrivals.end()) {
+				// another ID is an earlier process that had this namespace PID and whose arrival no fork() took:
+				// a child whose parent died before it checked in (it was then reparented to us)
+				bool ours = childID < 0 || it->second == childID;
+				_forkArrivals.erase(it);
+				if (ours) {
+					return ForkWaitResult::Arrived;
+				}
+			}
+			semaphore = _dtapeForkWaitSemaphore;
+			if (semaphore) {
+				dtape_semaphore_retain(semaphore);
+			}
+		}
+
+		if (!semaphore) {
+			// we are dying
+			return ForkWaitResult::ChildGone;
+		}
+
+		if (childPidfd >= 0 ? pidfdExited(childPidfd) : polls >= maxPollsWithoutPidfd) {
+			if (childPidfd < 0) {
+				processLog.warning() << *this << ": fork wait: child " << child << " hasn't checked in after " << (maxPollsWithoutPidfd * deathPollNs / 1000000000ull) << " s; fork() returns" << processLog.endLog;
+			}
+			gone = true;
+		} else {
+			// woken by any child's arrival: look again
+			switch (dtape_semaphore_down_timed(semaphore, deathPollNs)) {
+				case dtape_semaphore_wait_result_ok:
+					break;
+				case dtape_semaphore_wait_result_timed_out:
+					polls++;
+					break;
+				case dtape_semaphore_wait_result_interrupted:
+					// the child's arrival, if any, stays for the retry
+					dtape_semaphore_release(semaphore);
+					return ForkWaitResult::Interrupted;
+				default:
+					// the semaphore was destroyed: we are dying or exec'ing
+					gone = true;
+					break;
+			}
+		}
+		dtape_semaphore_release(semaphore);
+
+		if (gone) {
+			// the child may have arrived just before it died
+			std::unique_lock lock(_forkLock);
+			auto it = _forkArrivals.find(child);
+			if (it != _forkArrivals.end() && (childID < 0 || it->second == childID)) {
+				_forkArrivals.erase(it);
+			}
+			return ForkWaitResult::ChildGone;
+		}
+	}
 };
 
 void DarlingServer::Process::registerListeningKqchan(std::shared_ptr<Kqchan::Process> kqchan) {
@@ -740,9 +853,12 @@ void DarlingServer::Process::notifyDead() {
 		// its threads are dead: terminate the task's IPC now, as XNU does, rather than with the last reference to it
 		dtape_task_dying(self->_dtapeTask);
 
-		if (self->_dtapeForkWaitSemaphore) {
-			dtape_semaphore_destroy(self->_dtapeForkWaitSemaphore);
-			self->_dtapeForkWaitSemaphore = nullptr;
+		{
+			std::unique_lock forkLock(self->_forkLock);
+			if (self->_dtapeForkWaitSemaphore) {
+				dtape_semaphore_destroy(self->_dtapeForkWaitSemaphore);
+				self->_dtapeForkWaitSemaphore = nullptr;
+			}
 		}
 		dtape_task_release(self->_dtapeTask);
 		self->_dtapeTask = nullptr;

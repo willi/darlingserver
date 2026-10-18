@@ -160,7 +160,12 @@ calls = [
 		('length', 'uint64_t'),
 	]),
 
-	('fork_wait_for_child', [], [], ALLOW_INTERRUPTIONS),
+	# waits for the fork child `child` (its PID) to check in; `child_pidfd` (-1 without pidfd support) tells it
+	# from an earlier process with that PID, and shows it dying first
+	('fork_wait_for_child', [
+		('child', 'int32_t'),
+		('child_pidfd', '@fd'),
+	], [], ALLOW_INTERRUPTIONS),
 
 	('sigprocess', [
 		('bsd_signal_number', 'int32_t'),
@@ -1620,6 +1625,10 @@ for call in calls:
 		tmp += parse_type(param, True) + "* out_" + param_name
 		public_header.write(tmp)
 		library_source.write(tmp)
+	# a prototype, so that C checks every call: "()" would take any arguments
+	if is_first:
+		public_header.write("void")
+		library_source.write("void")
 	public_header.write(");\n\n")
 	library_source.write(") {\n")
 
