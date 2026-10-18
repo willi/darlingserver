@@ -53,7 +53,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			break;
 
 		default:
-			throw ProtocolError("Invalid call number");
+			// as XNU's ipc_kobject_server() answers MIG_BAD_ID, and unix_syscall() nosys
+			throw ProtocolError("Invalid call number", -ENOSYS);
 	}
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
@@ -82,11 +83,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		});
 
 		if (!process) {
-			callLog.error() << "Received call from non-existent process?" << callLog.endLog;
-
-			// ignore this call
-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
-			return nullptr;
+			throw ProtocolError("Received call from non-existent process?", -ESRCH);
 		}
 
 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
@@ -119,11 +116,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		});
 
 		if (!thread) {
-			callLog.error() << "Received call from non-existent thread?" << callLog.endLog;
-
-			// ignore this call
-			// TODO: instead of ignoring it, we should return a generic reply indicating `-ESRCH` or something like that.
-			return nullptr;
+			throw ProtocolError("Received call from non-existent thread?", -ESRCH);
 		}
 
 		thread->setAddress(requestMessage.address());
@@ -225,7 +218,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	#define CALL_CASE(_callName, _className) \
 		case dserver_callnum_ ## _callName: { \
 			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
-				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t"); \
+				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t", -EINVAL); \
 			} \
 			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
 		} break;
@@ -255,6 +248,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Messag
 	dserver_rpc_callhdr_t header = {};
 	memcpy(&header, requestMessage.data().data(), std::min(sizeof(header), requestMessage.data().size()));
 	pid_t senderPID = requestMessage.pid();
+	Address replyAddress = requestMessage.address();
 	const char* name = dserver_callnum_to_string(header.number);
 
 	try {
@@ -262,12 +256,26 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Messag
 	} catch (const ProtocolError& e) {
 		// One client's malformed or out-of-order call mustn't take down every process: drop the call and go on.
 		callLog.error() << "Dropped call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+
+		// so that the caller doesn't wait for ever: an S2C reply and a push aren't answered with a reply
+		if (e.replyCode() != 0 && header.number != dserver_callnum_s2c && header.number != dserver_callnum_push_reply) {
+			sendErrorReply(replyAddress, header.number, e.replyCode());
+		}
 	} catch (const std::exception& e) {
 		// darlingserver's own invariant: say so, and end it, as XNU panics
 		callLog.error() << "Internal error on call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
 		throw;
 	}
 	return nullptr;
+};
+
+void DarlingServer::Call::sendErrorReply(Address replyAddress, uint32_t callNumber, int code) {
+	Message reply(sizeof(dserver_rpc_replyhdr_t), 0);
+	reply.setAddress(replyAddress);
+	auto replyHeader = reinterpret_cast<dserver_rpc_replyhdr_t*>(reply.data().data());
+	replyHeader->number = static_cast<dserver_callnum_t>(callNumber);
+	replyHeader->code = code;
+	sendReply(std::move(reply));
 };
 
 DarlingServer::Call::Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader):

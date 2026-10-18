@@ -40,9 +40,18 @@ namespace DarlingServer {
 	// darlingserver's own broken invariants are other exceptions, and still end darlingserver.
 	class ProtocolError: public std::runtime_error {
 	public:
-		ProtocolError(const std::string& what):
-			std::runtime_error(what)
+		// replyCode: what the caller is answered with (a negative errno), or 0 for no answer
+		ProtocolError(const std::string& what, int replyCode = 0):
+			std::runtime_error(what),
+			_replyCode(replyCode)
 			{};
+
+		int replyCode() const {
+			return _replyCode;
+		};
+
+	private:
+		int _replyCode;
 	};
 
 	class Call {
@@ -73,6 +82,10 @@ namespace DarlingServer {
 
 		// callFromMessage for the main loop: a call that breaks the protocol is logged and dropped
 		static std::shared_ptr<Call> dispatchMessage(Message&& requestMessage);
+
+		// answers a call with only a reply header: its number and `code`, a negative errno. The client's wrapper
+		// returns that code.
+		static void sendErrorReply(Address replyAddress, uint32_t callNumber, int code);
 
 		virtual Number number() const = 0;
 		std::shared_ptr<Thread> thread() const;

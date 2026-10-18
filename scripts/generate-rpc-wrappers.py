@@ -1546,6 +1546,14 @@ for call in calls:
 		library_source.write("\t\treturn dserver_rpc_hooks_get_communication_error_status();\n")
 	library_source.write("\t}\n\n")
 
+	# darlingserver answers a call it drops (an unknown number, a malformed call) with only a reply header and an
+	# error code: return that code
+	library_source.write("\tif (long_status == sizeof(dserver_rpc_replyhdr_t) && reply_msg.reply.header.code < 0) {\n")
+	if (flags & ALLOW_INTERRUPTIONS) == 0:
+		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
+	library_source.write("\t\treturn reply_msg.reply.header.code;\n")
+	library_source.write("\t}\n\n")
+
 	library_source.write("\tif (long_status != sizeof(reply_msg.reply)) {\n")
 	if (flags & ALLOW_INTERRUPTIONS) == 0:
 		library_source.write("\t\tdserver_rpc_hooks_atomic_end(&atomic_save);\n")
