@@ -212,7 +212,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 		// extract the reply-push synchronization pipe
 		auto pipeDesc = requestMessage.descriptors().empty() ? -1 : requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
-		char tmp = 1;
+		char tmp = DSERVER_PUSH_REPLY_SAVED;
 
 		if (pipeDesc < 0) {
 			// nothing to wake the client with: it waits for ever, but the others go on
@@ -225,7 +225,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		// other process's calls.
 		auto dropPushedReply = [&](const char* why) {
 			callLog.error() << *thread << ": Client-pushed reply dropped: " << why << callLog.endLog;
-			write(pipeDesc, &tmp, sizeof(tmp));
+			char dropped = DSERVER_PUSH_REPLY_DROPPED;
+			write(pipeDesc, &dropped, sizeof(dropped));
 			close(pipeDesc);
 			return nullptr;
 		};
@@ -323,8 +324,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Messag
 		if (header.number == dserver_callnum_push_reply && !requestMessage.descriptors().empty()) {
 			int pipeDesc = requestMessage.extractDescriptorAtIndex(requestMessage.descriptors().size() - 1);
 			if (pipeDesc >= 0) {
-				char tmp = 1;
-				write(pipeDesc, &tmp, sizeof(tmp));
+				char dropped = DSERVER_PUSH_REPLY_DROPPED;
+				write(pipeDesc, &dropped, sizeof(dropped));
 				close(pipeDesc);
 			}
 		}

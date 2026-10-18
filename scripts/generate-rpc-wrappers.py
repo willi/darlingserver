@@ -1678,6 +1678,9 @@ for call in calls:
 	curr_call_len_str = "(dserver_rpc_helper_max(sizeof(dserver_rpc_call_" + call_name + "_t), " + curr_call_len_str + "))"
 	curr_reply_len_str = "(dserver_rpc_helper_max(sizeof(dserver_rpc_reply_" + call_name + "_t), " + curr_reply_len_str + "))"
 
+# the byte darlingserver writes to a push_reply's pipe: it took the reply (1, what it always wrote), or dropped it
+public_header.write("#define DSERVER_PUSH_REPLY_SAVED 1\n")
+public_header.write("#define DSERVER_PUSH_REPLY_DROPPED 0\n")
 public_header.write("#define DSERVER_RPC_CALL_MAX_LENGTH " + curr_call_len_str + "\n")
 public_header.write("#define DSERVER_RPC_REPLY_MAX_LENGTH " + curr_reply_len_str + "\n")
 public_header.write("#define DSERVER_RPC_CALL_MAX_FD_COUNT " + str(max_call_fd_count) + "\n")
