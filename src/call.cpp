@@ -117,6 +117,13 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			throw ProtocolError("Received call from non-existent process?", -ESRCH);
 		}
 
+		// before the thread's reply address moves to this message's socket: a message naming another process's
+		// thread mustn't redirect that thread's replies. The header's PID is the client's word, so a mismatch is
+		// a client's error (or a stale entry, whose calls then fail, loudly); either way, not darlingserver's to die of.
+		if (process->id() != requestMessage.pid()) {
+			throw ProtocolError("System-reported message PID " + std::to_string(requestMessage.pid()) + " != darlingserver-recorded PID " + std::to_string(process->id()), -ESRCH);
+		}
+
 		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
 			std::shared_ptr<Thread> tmp = nullptr;
 
@@ -151,10 +158,6 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		}
 
 		thread->setAddress(requestMessage.address());
-
-		if (process->id() != requestMessage.pid()) {
-			throw std::runtime_error("System-reported message PID != darlingserver-recorded PID");
-		}
 	}
 
 	auto pidString = (process) ? (std::to_string(process->id()) + " (" + std::to_string(process->nsid()) + ")") : (std::to_string(header->pid) + " (-1)");
