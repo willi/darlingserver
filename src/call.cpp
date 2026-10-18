@@ -28,6 +28,8 @@
 #include <sys/fcntl.h>
 #include <sys/syscall.h>
 #include <darlingserver/kqchan.hpp>
+#include <algorithm>
+#include <cstring>
 
 static DarlingServer::Log callLog("calls");
 
@@ -35,7 +37,7 @@ DarlingServer::Log DarlingServer::Call::rpcReplyLog("replies");
 
 std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
-		throw std::invalid_argument("Message buffer was too small for call header");
+		throw ProtocolError("Message buffer was too small for call header");
 	}
 
 	dserver_rpc_callhdr_t* header = reinterpret_cast<dserver_rpc_callhdr_t*>(requestMessage.data().data());
@@ -51,7 +53,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			break;
 
 		default:
-			throw std::invalid_argument("Invalid call number");
+			throw ProtocolError("Invalid call number");
 	}
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
@@ -142,7 +144,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			std::unique_lock lock(thread->_rwlock);
 
 			if (thread->_s2cReply) {
-				throw std::runtime_error("Received S2C reply but thread already had one pending");
+				throw ProtocolError("Received S2C reply but thread already had one pending");
 			}
 
 			thread->_s2cReply = std::move(requestMessage);
@@ -223,7 +225,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	#define CALL_CASE(_callName, _className) \
 		case dserver_callnum_ ## _callName: { \
 			if (requestMessage.data().size() < sizeof(dserver_rpc_call_ ## _callName ## _t)) { \
-				throw std::invalid_argument("Message buffer was too small for dserver_call_" #_callName "_t"); \
+				throw ProtocolError("Message buffer was too small for dserver_call_" #_callName "_t"); \
 			} \
 			result = std::make_shared<_className>(thread, reinterpret_cast<dserver_rpc_call_ ## _callName ## _t*>(header), std::move(requestMessage)); \
 		} break;
@@ -246,6 +248,26 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		});
 		return nullptr;
 	}
+};
+
+std::shared_ptr<DarlingServer::Call> DarlingServer::Call::dispatchMessage(Message&& requestMessage) {
+	// what the call is logged with, before callFromMessage takes the message
+	dserver_rpc_callhdr_t header = {};
+	memcpy(&header, requestMessage.data().data(), std::min(sizeof(header), requestMessage.data().size()));
+	pid_t senderPID = requestMessage.pid();
+	const char* name = dserver_callnum_to_string(header.number);
+
+	try {
+		return callFromMessage(std::move(requestMessage));
+	} catch (const ProtocolError& e) {
+		// One client's malformed or out-of-order call mustn't take down every process: drop the call and go on.
+		callLog.error() << "Dropped call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+	} catch (const std::exception& e) {
+		// darlingserver's own invariant: say so, and end it, as XNU panics
+		callLog.error() << "Internal error on call #" << header.number << " (" << (name ? name : "unknown") << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << callLog.endLog;
+		throw;
+	}
+	return nullptr;
 };
 
 DarlingServer::Call::Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader):

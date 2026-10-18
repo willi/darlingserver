@@ -274,7 +274,7 @@ void DarlingServer::Thread::setPendingCall(std::shared_ptr<Call> newPendingCall)
 			_pendingInterrupts.push(newPendingCall);
 			return;
 		} else {
-			throw std::runtime_error("Thread's pending call overwritten while active");
+			throw ProtocolError("Thread's pending call overwritten while active");
 		}
 	}
 	_pendingCall = newPendingCall;

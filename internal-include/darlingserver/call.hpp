@@ -28,11 +28,22 @@
 #include <darlingserver/logging.hpp>
 
 #include <memory>
+#include <stdexcept>
 
 #include <unistd.h>
 
 namespace DarlingServer {
 	class CallWithReply;
+
+	// A client's call that breaks darlingserver's protocol: an unknown call number, a malformed message, a call its
+	// thread's state can't take. It costs only that call (and, when the caller waits for one, an error reply);
+	// darlingserver's own broken invariants are other exceptions, and still end darlingserver.
+	class ProtocolError: public std::runtime_error {
+	public:
+		ProtocolError(const std::string& what):
+			std::runtime_error(what)
+			{};
+	};
 
 	class Call {
 	public:
@@ -59,6 +70,9 @@ namespace DarlingServer {
 		virtual ~Call();
 
 		static std::shared_ptr<Call> callFromMessage(Message&& requestMessage);
+
+		// callFromMessage for the main loop: a call that breaks the protocol is logged and dropped
+		static std::shared_ptr<Call> dispatchMessage(Message&& requestMessage);
 
 		virtual Number number() const = 0;
 		std::shared_ptr<Thread> thread() const;

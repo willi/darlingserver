@@ -30,7 +30,6 @@
 #include <system_error>
 #include <thread>
 #include <array>
-#include <algorithm>
 #include <darlingserver/registry.hpp>
 #include <sys/eventfd.h>
 #include <darlingserver/duct-tape.h>
@@ -40,10 +39,8 @@
 #include <sys/wait.h>
 
 #include <darlingserver/logging.hpp>
-#include <darlingserver/call.hpp>
 
 static DarlingServer::Server* sharedInstancePointer = nullptr;
-static DarlingServer::Log serverLog("server");
 
 struct DTapeHooks {
 	static void dtape_hook_thread_suspend(void* thread_context, dtape_thread_continuation_callback_f continuationCallback, void* continuationContext, libsimple_lock_t* unlockMe) {
@@ -546,22 +543,10 @@ void DarlingServer::Server::start() {
 			_canRead = _inbox.receiveMany(_listenerSocket);
 
 			while (auto msg = _inbox.pop()) {
-				// what a protocol error is logged with, before the call takes the message
-				dserver_rpc_callhdr_t header = {};
-				memcpy(&header, msg->data().data(), std::min(sizeof(header), msg->data().size()));
-				pid_t senderPID = msg->pid();
-
 				// TODO: this could be done concurrently
-				try {
-					auto call = DarlingServer::Call::callFromMessage(std::move(*msg));
-					if (call) {
-						_workQueue.push(call->thread());
-					}
-				} catch (const std::exception& e) {
-					// One client's malformed or out-of-order call (a protocol error, or a bug of ours for that thread)
-					// mustn't take down every process: drop the call and go on. Its thread waits for a reply that
-					// won't come.
-					serverLog.error() << "Dropped call #" << header.number << " (" << dserver_callnum_to_string(header.number) << ") from PID " << senderPID << " (" << header.pid << "), TID " << header.tid << ": " << e.what() << serverLog.endLog;
+				auto call = DarlingServer::Call::dispatchMessage(std::move(*msg));
+				if (call) {
+					_workQueue.push(call->thread());
 				}
 			}
 		}
