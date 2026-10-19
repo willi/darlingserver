@@ -21,6 +21,7 @@
 #define _DARLINGSERVER_THREAD_HPP_
 
 #include <memory>
+#include <atomic>
 #include <sys/types.h>
 #include <mutex>
 #include <shared_mutex>
@@ -41,11 +42,13 @@ struct DTapeHooks;
 namespace DarlingServer {
 	class Process;
 	class Call;
+	class Server;
 
 	class Thread: public std::enable_shared_from_this<Thread>, public Loggable {
 		friend class Process;
 		friend class Call; // HACK, see call.cpp
 		friend class Registry<Thread>;
+		friend class Server; // claimScheduling()
 
 	public:
 		enum class RunState {
@@ -85,6 +88,11 @@ namespace DarlingServer {
 		dtape_thread_t* _dtapeThread;
 		std::function<void()> _continuationCallback = nullptr;
 		bool _running = false;
+		// on the work queue, its doWork() not yet started (Server::scheduleThread())
+		std::atomic<bool> _scheduled{false};
+		// Server::scheduleThread() only: whether the thread wasn't on the work queue already (and now is). A claim must be
+		// followed by the push: only that entry's doWork() clears the flag.
+		bool claimScheduling();
 		bool _terminating = false;
 		std::shared_ptr<Call> _activeCall = nullptr;
 		std::shared_ptr<Thread> _impersonating = nullptr;
@@ -169,7 +177,8 @@ namespace DarlingServer {
 		std::shared_ptr<Process> process() const;
 
 		std::shared_ptr<Call> pendingCall() const;
-		void setPendingCall(std::shared_ptr<Call> newPendingCall);
+		// false when the call waits behind the pending one (an InterruptEnter): it's scheduled when that one is done
+		bool setPendingCall(std::shared_ptr<Call> newPendingCall);
 
 		std::shared_ptr<Call> activeCall() const;
 		void makePendingCallActive();

@@ -264,7 +264,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Thread::pendingCall() const 
 	return _pendingCall;
 };
 
-void DarlingServer::Thread::setPendingCall(std::shared_ptr<Call> newPendingCall) {
+bool DarlingServer::Thread::setPendingCall(std::shared_ptr<Call> newPendingCall) {
 	std::unique_lock lock(_rwlock);
 	if (newPendingCall && _dead) {
 		// it would never be processed (see _answerUnprocessedCallsLocked())
@@ -275,13 +275,18 @@ void DarlingServer::Thread::setPendingCall(std::shared_ptr<Call> newPendingCall)
 			// InterruptEnter calls can occur after we receive a call but before we start processing it,
 			// so we need to handle this case gracefully. we do so by saving the interrupt and scheduling
 			// it to be processed once the pending call becomes active and suspends or exits.
+			// doWork() schedules it then, so the caller mustn't schedule the thread for it now: the pending call's own
+			// scheduling runs that call, and one more would run doWork() once too often. When the thread has suspended
+			// in a wait by then, that doWork() would resume it with no wakeup (a semaphore wait returning
+			// THREAD_WAITING: the "semaphore_block" panic).
 			_pendingInterrupts.push(newPendingCall);
-			return;
+			return false;
 		} else {
 			throw ProtocolError("Thread's pending call overwritten while active", -EBUSY);
 		}
 	}
 	_pendingCall = newPendingCall;
+	return true;
 };
 
 std::shared_ptr<DarlingServer::Call> DarlingServer::Thread::activeCall() const {
@@ -396,12 +401,24 @@ void DarlingServer::Thread::microthreadContinuation() {
 	__builtin_unreachable();
 };
 
+bool DarlingServer::Thread::claimScheduling() {
+	return !_scheduled.exchange(true);
+};
+
 void DarlingServer::Thread::doWork() {
 	// NOTE: this method MUST NOT use any local variables that require destructors.
 	//       this method is actually major UB because the compiler is free to do whatever it likes with the stack,
 	//       but we know what reasonable compilers (i.e. GCC and Clang) do with it and we're specifically targeting Clang, so it's okay for us.
 
 	_rwlock.lock();
+
+	// the thread is off the work queue now: a scheduling from here on is another doWork(), which reads the state it finds
+	// then. Cleared under `_rwlock`, after every scheduler's writes to the state it reads (they write it under the lock
+	// before they claim): don't move this out of the lock. When this doWork() can't act, the thread is scheduled again: a
+	// deferred one by _undeferLocked(); a call that came in while the thread was still running, by doneWorking. (A
+	// wakeup can't come then: thread_unblock() resumes under the wake lock, which the suspending thread holds until
+	// doneWorking lets it go.)
+	_scheduled = false;
 
 	if (_deferralState != DeferralState::NotDeferred) {
 		microthreadLog.debug() << _tid << "(" << _nstid << "): execution was deferred" << microthreadLog.endLog;
@@ -580,6 +597,13 @@ doneWorking:
 			_pendingCall = _pendingInterrupts.front();
 			_pendingInterrupts.pop();
 
+			Server::sharedInstance().scheduleThread(shared_from_this());
+		}
+		else if (!_terminating && !_dead && _pendingCall && !_pendingCallOverride) {
+			// a call that came in while this one ran: its reply goes out before `_running` is cleared above, and the next
+			// call's doWork() may have found the thread still running and returned, and nothing else would run it. (The
+			// same for an interrupt_enter that came while this call was suspending.) If that doWork() hasn't started yet,
+			// the claim drops this scheduling. Not with `_pendingCallOverride`: that thread resumes its interrupted call.
 			Server::sharedInstance().scheduleThread(shared_from_this());
 		}
 
