@@ -368,6 +368,9 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 		oldS2CSemaphores[1] = std::exchange(mainThread->_s2cReplySempahore, nullptr);
 		oldS2CSemaphores[2] = std::exchange(mainThread->_s2cInterruptEnterSemaphore, nullptr);
 		oldS2CSemaphores[3] = std::exchange(mainThread->_s2cInterruptExitSemaphore, nullptr);
+		// a request on the old ones is void: its caller's wait ends with their destroy, and a signal that comes after is answered
+		// at once (Call::S2CPerform)
+		mainThread->_s2cRequest = 0;
 	}
 	for (auto semaphore: oldS2CSemaphores) {
 		if (semaphore) {
@@ -709,26 +712,32 @@ std::shared_ptr<DarlingServer::Thread> DarlingServer::Process::_pickS2CThread(vo
 		return nullptr;
 	}
 
-	// if we're the process for the current thread (i.e. we're the current process), use the current thread
+	// if we're the process for the current thread (i.e. we're the current process), use the current thread, unless
+	// it's dying (the process died during its call): then another one, as for another process
 	if (currentProcess().get() == this) {
-		return Thread::currentThread();
-	}
-
-	// otherwise, pick any thread to perform the call
-
-	std::shared_ptr<Thread> thread = nullptr;
-
-	{
-		std::shared_lock lock(_rwlock);
-		for (auto& [id, weakThread]: _threads) {
-			thread = weakThread.lock();
-			if (thread) {
-				break;
-			}
+		auto current = Thread::currentThread();
+		if (current && !current->isDead()) {
+			return current;
 		}
 	}
 
-	return thread;
+	// otherwise, pick any thread that isn't dead to perform the call (a dead one would never take it). The weak
+	// references are copied under the lock and locked outside it, as notifyDead() does: the last reference to a dying
+	// thread may be the one taken here, and ~Thread takes this lock.
+	std::vector<std::weak_ptr<Thread>> candidates;
+	{
+		std::shared_lock lock(_rwlock);
+		candidates.reserve(_threads.size());
+		for (auto& [id, weakThread]: _threads) {
+			candidates.push_back(weakThread);
+		}
+	}
+	for (auto& weakThread: candidates) {
+		if (auto thread = weakThread.lock(); thread && !thread->isDead()) {
+			return thread;
+		}
+	}
+	return nullptr;
 };
 
 std::string DarlingServer::Process::executablePath() const {
@@ -747,54 +756,54 @@ void DarlingServer::Process::setExecutable(std::string path, const std::array<ui
 	_executableUUID = uuid;
 };
 
-uintptr_t DarlingServer::Process::allocatePages(size_t pageCount, int protection, uintptr_t addressHint, bool fixed, bool overwrite) {
-	auto thread = _pickS2CThread();
-
-	if (!thread) {
-		throw std::system_error(ESRCH, std::generic_category());
+// Runs `function` with a thread of ours to perform the S2C call. One that dies before it takes the call (it was
+// checking out, with darlingserver's signals blocked) fails it with ESRCH, unsent, and another thread is picked:
+// _pickS2CThread() skips the dead. 16 tries at most.
+template<typename Function>
+auto DarlingServer::Process::_performS2C(Function&& function) {
+	for (int attempt = 1; ; attempt++) {
+		auto thread = _pickS2CThread();
+		if (!thread) {
+			throw std::system_error(ESRCH, std::generic_category());
+		}
+		try {
+			return function(thread);
+		} catch (const std::system_error& e) {
+			if (e.code().value() != ESRCH || !thread->isDead() || attempt >= 16) {
+				throw;
+			}
+		}
 	}
+};
 
-	return thread->allocatePages(pageCount, protection, addressHint, fixed, overwrite);
+uintptr_t DarlingServer::Process::allocatePages(size_t pageCount, int protection, uintptr_t addressHint, bool fixed, bool overwrite) {
+	return _performS2C([&](const std::shared_ptr<Thread>& thread) {
+		return thread->allocatePages(pageCount, protection, addressHint, fixed, overwrite);
+	});
 };
 
 void DarlingServer::Process::freePages(uintptr_t address, size_t pageCount) {
-	auto thread = _pickS2CThread();
-
-	if (!thread) {
-		throw std::system_error(ESRCH, std::generic_category());
-	}
-
-	return thread->freePages(address, pageCount);
+	return _performS2C([&](const std::shared_ptr<Thread>& thread) {
+		return thread->freePages(address, pageCount);
+	});
 };
 
 uintptr_t DarlingServer::Process::mapFile(int fd, size_t pageCount, int protection, uintptr_t addressHint, size_t pageOffset, bool fixed, bool overwrite) {
-	auto thread = _pickS2CThread();
-
-	if (!thread) {
-		throw std::system_error(ESRCH, std::generic_category());
-	}
-
-	return thread->mapFile(fd, pageCount, protection, addressHint, pageOffset, fixed, overwrite);
+	return _performS2C([&](const std::shared_ptr<Thread>& thread) {
+		return thread->mapFile(fd, pageCount, protection, addressHint, pageOffset, fixed, overwrite);
+	});
 };
 
 void DarlingServer::Process::changeProtection(uintptr_t address, size_t pageCount, int protection) {
-	auto thread = _pickS2CThread();
-
-	if (!thread) {
-		throw std::system_error(ESRCH, std::generic_category());
-	}
-
-	return thread->changeProtection(address, pageCount, protection);
+	return _performS2C([&](const std::shared_ptr<Thread>& thread) {
+		return thread->changeProtection(address, pageCount, protection);
+	});
 };
 
 void DarlingServer::Process::syncMemory(uintptr_t address, size_t size, int sync_flags) {
-	auto thread = _pickS2CThread();
-
-	if (!thread) {
-		throw std::system_error(ESRCH, std::generic_category());
-	}
-
-	return thread->syncMemory(address, size, sync_flags);
+	return _performS2C([&](const std::shared_ptr<Thread>& thread) {
+		return thread->syncMemory(address, size, sync_flags);
+	});
 };
 
 static const std::regex memoryRegionEntryAddressRegex("([0-9a-fA-F]+)\\-([0-9a-fA-F]+)");
