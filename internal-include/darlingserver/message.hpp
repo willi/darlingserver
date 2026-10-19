@@ -163,6 +163,8 @@ namespace DarlingServer {
 		std::deque<Message> _messages;
 		mutable std::mutex _lock;
 		std::function<void()> _messageArrivalNotificationCallback = nullptr;
+		// receiveMany()'s buffers, made on its first call; a slot is replaced only once its message is taken
+		std::vector<Message> _receiveSlots;
 
 	public:
 		void setMessageArrivalNotificationCallback(std::function<void()> messageArrivalNotificationCallback);

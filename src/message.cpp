@@ -30,6 +30,22 @@
 
 static DarlingServer::Log messageLog("message");
 
+// The credentials a Message sends with (SCM_CREDENTIALS), read once: three syscalls per Message were a quarter of
+// darlingserver's CPU, as receiveMany() makes a Message for every slot it offers recvmmsg(). They don't change once
+// the first Message exists: main() drops privileges for good before it creates the Server, and darlingserver never
+// forks a process that makes Messages (its one clone() runs launchd). A stale value couldn't go unnoticed anyway: the
+// kernel refuses a send whose credentials aren't the sender's (EPERM).
+static const struct ucred& ourCredentials() {
+	static const struct ucred credentials = [] {
+		struct ucred creds;
+		creds.pid = getpid();
+		creds.uid = getuid();
+		creds.gid = getgid();
+		return creds;
+	}();
+	return credentials;
+};
+
 DarlingServer::Address::Address() {
 	_address.sun_family = AF_UNIX;
 	memset(_address.sun_path, 0, sizeof(_address.sun_path));
@@ -70,12 +86,8 @@ DarlingServer::Message::Message(size_t bufferSpace, size_t descriptorSpace, std:
 	_controlHeader->cmsg_len = CMSG_LEN(sizeof(struct ucred));
 	_controlHeader->cmsg_level = SOL_SOCKET;
 	_controlHeader->cmsg_type = SCM_CREDENTIALS;
-	struct ucred ourCreds;
-	ourCreds.pid = getpid();
-	ourCreds.uid = getuid();
-	ourCreds.gid = getgid();
 	// the cmsg man page says memcpy should be used with CMSG_DATA instead of direct pointer access
-	memcpy(CMSG_DATA(_controlHeader), &ourCreds, sizeof(ourCreds));
+	memcpy(CMSG_DATA(_controlHeader), &ourCredentials(), sizeof(struct ucred));
 
 	if (descriptorSpace > 0) {
 		auto fdHeader = reinterpret_cast<decltype(_controlHeader)>(reinterpret_cast<char*>(_controlHeader) + CMSG_SPACE(sizeof(struct ucred)));
@@ -353,11 +365,7 @@ void DarlingServer::Message::_ensureCredentialsHeader() {
 	credHeader->cmsg_level = SOL_SOCKET;
 	credHeader->cmsg_type = SCM_CREDENTIALS;
 
-	struct ucred creds;
-	creds.pid = getpid();
-	creds.uid = getuid();
-	creds.gid = getgid();
-	memcpy(CMSG_DATA(credHeader), &creds, sizeof(struct ucred));
+	memcpy(CMSG_DATA(credHeader), &ourCredentials(), sizeof(struct ucred));
 };
 
 void DarlingServer::Message::_ensureDescriptorHeader(size_t newSpace) {
@@ -580,9 +588,15 @@ bool DarlingServer::MessageQueue::receiveMany(int socket) {
 	struct mmsghdr mmsgs[16];
 	int ret = 0;
 
-	while (ret >= 0) {
-		std::array<Message, sizeof(mmsgs) / sizeof(*mmsgs)> messages;
+	// the slots outlive the call, so a pass (each call makes at least two, the last one EAGAIN) costs a new Message only
+	// for each message it takes, not for every slot it offers. recvmmsg() fills copies of their headers, so a slot it
+	// didn't fill is as it was made.
+	auto& messages = _receiveSlots;
+	if (messages.empty()) {
+		messages.resize(sizeof(mmsgs) / sizeof(*mmsgs));
+	}
 
+	while (ret >= 0) {
 		for (size_t i = 0; i < messages.size(); ++i) {
 			mmsgs[i].msg_hdr = messages[i].rawHeader();
 			mmsgs[i].msg_len = 0;
@@ -606,6 +620,7 @@ bool DarlingServer::MessageQueue::receiveMany(int socket) {
 			messages[i].data().resize(mmsgs[i].msg_len);
 			messages[i].setAddress(Address(*(const struct sockaddr_un*)mmsgs[i].msg_hdr.msg_name, mmsgs[i].msg_hdr.msg_namelen));
 			_messages.push_back(std::move(messages[i]));
+			messages[i] = Message();
 		}
 	}
 
