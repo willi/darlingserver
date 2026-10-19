@@ -31,6 +31,7 @@
 #include <darlingserver/memorystatus.hpp>
 #include <algorithm>
 #include <cstring>
+#include <utility>
 #include <rtsig.h>
 
 static DarlingServer::Log callLog("calls");
@@ -305,6 +306,15 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	}
 
 	#undef CALL_CASE
+
+	// Thread::_s2cPerform() gives mldr's checkin and thread-exit checkout the S2C signal (mldr's RPC hooks abort on an S2C
+	// call); libsystem's, the fork child's checkin and the exec's checkout, serve one inline. Told apart here, as the
+	// exec's pipe is gone once the checkout has run.
+	if (auto checkin = std::dynamic_pointer_cast<Checkin>(result)) {
+		result->_madeByMldr = !checkin->_body.is_fork;
+	} else if (auto checkout = std::dynamic_pointer_cast<Checkout>(result)) {
+		result->_madeByMldr = checkout->_body.exec_listener_pipe < 0;
+	}
 
 	if (thread) {
 		if (!thread->setPendingCall(result)) {
@@ -1261,12 +1271,16 @@ void DarlingServer::Call::S2CPerform::processCall() {
 	int code = 0;
 
 	if (auto thread = _thread.lock()) {
-		// taken and retained under the lock: notifyDead() and the release destroy them (see Thread::_s2cPerform())
+		// The request this green light answers (Thread::_s2cPerform()), taken with the two semaphores under the lock,
+		// and the semaphores retained: notifyDead() and the release destroy them. With no request, the signal is stale
+		// (its caller stopped waiting, or an exec voided it): nothing waits for this green light, so it's answered at
+		// once. (Not an error: sigrt_handler aborts on one.)
 		dtape_semaphore_t* enterSemaphore = nullptr;
 		dtape_semaphore_t* exitSemaphore = nullptr;
 		{
-			std::shared_lock lock(thread->_rwlock);
-			if (thread->_s2cInterruptEnterSemaphore && thread->_s2cInterruptExitSemaphore) {
+			std::unique_lock lock(thread->_rwlock);
+			if (thread->_s2cRequest != 0 && thread->_s2cInterruptEnterSemaphore && thread->_s2cInterruptExitSemaphore) {
+				thread->_s2cTaken = std::exchange(thread->_s2cRequest, 0);
 				enterSemaphore = thread->_s2cInterruptEnterSemaphore;
 				exitSemaphore = thread->_s2cInterruptExitSemaphore;
 				dtape_semaphore_retain(enterSemaphore);
@@ -1278,9 +1292,6 @@ void DarlingServer::Call::S2CPerform::processCall() {
 			dtape_semaphore_down_simple(exitSemaphore);
 			dtape_semaphore_release(enterSemaphore);
 			dtape_semaphore_release(exitSemaphore);
-		} else {
-			// dead: no S2C call is waiting for it
-			code = -ESRCH;
 		}
 	} else {
 		code = -ESRCH;
