@@ -103,6 +103,13 @@ DarlingServer::Memorystatus::State::State():
 	bandOrder = nextTailOrder++;
 };
 
+void DarlingServer::Memorystatus::resetForExec(Process& process) {
+	// (State() takes the lock itself, for its band order)
+	State fresh;
+	std::unique_lock lock(memorystatusLock);
+	process.memorystatus() = fresh;
+};
+
 namespace {
 	using DarlingServer::Process;
 	using State = DarlingServer::Memorystatus::State;
