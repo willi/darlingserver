@@ -306,7 +306,11 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	#undef CALL_CASE
 
 	if (thread) {
-		thread->setPendingCall(result);
+		if (!thread->setPendingCall(result)) {
+			// queued behind the thread's pending call, and scheduled when that one is done: nothing to schedule now
+			callLog.debug() << *thread << ": Call queued behind the pending call" << callLog.endLog;
+			return nullptr;
+		}
 		return result;
 	} else {
 		Thread::kernelAsync([result]() {

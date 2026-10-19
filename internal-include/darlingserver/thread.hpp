@@ -21,6 +21,7 @@
 #define _DARLINGSERVER_THREAD_HPP_
 
 #include <memory>
+#include <atomic>
 #include <sys/types.h>
 #include <mutex>
 #include <shared_mutex>
@@ -85,6 +86,8 @@ namespace DarlingServer {
 		dtape_thread_t* _dtapeThread;
 		std::function<void()> _continuationCallback = nullptr;
 		bool _running = false;
+		// on the work queue, its doWork() not yet started (Server::scheduleThread())
+		std::atomic<bool> _scheduled{false};
 		bool _terminating = false;
 		std::shared_ptr<Call> _activeCall = nullptr;
 		std::shared_ptr<Thread> _impersonating = nullptr;
@@ -169,7 +172,8 @@ namespace DarlingServer {
 		std::shared_ptr<Process> process() const;
 
 		std::shared_ptr<Call> pendingCall() const;
-		void setPendingCall(std::shared_ptr<Call> newPendingCall);
+		// false when the call waits behind the pending one (an InterruptEnter): it's scheduled when that one is done
+		bool setPendingCall(std::shared_ptr<Call> newPendingCall);
 
 		std::shared_ptr<Call> activeCall() const;
 		void makePendingCallActive();
@@ -193,6 +197,9 @@ namespace DarlingServer {
 		void setAddress(Address address);
 
 		void doWork();
+
+		// Server::scheduleThread(): whether the thread wasn't on the work queue already (and now is)
+		bool claimScheduling();
 
 		/**
 		 * NOTE: This currently only works if this thread is the current thread.

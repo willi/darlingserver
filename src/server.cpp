@@ -546,7 +546,7 @@ void DarlingServer::Server::start() {
 				// TODO: this could be done concurrently
 				auto call = DarlingServer::Call::dispatchMessage(std::move(*msg));
 				if (call) {
-					_workQueue.push(call->thread());
+					scheduleThread(call->thread());
 				}
 			}
 		}
@@ -694,7 +694,15 @@ void DarlingServer::Server::_worker(std::shared_ptr<Thread> thread) {
 	thread->doWork();
 };
 
+// A thread is on the work queue once at most, as XNU's thread_setrun() puts a thread on one run queue only: its doWork()
+// sees everything scheduled before it starts. Another entry would run doWork() once too often, and one that found the
+// thread suspended in a wait would resume it with no wakeup.
 void DarlingServer::Server::scheduleThread(std::shared_ptr<Thread> thread) {
+	if (!thread->claimScheduling()) {
+		static DarlingServer::Log scheduleLog("schedule");
+		scheduleLog.warning() << *thread << ": already on the work queue; dropped another entry for it" << scheduleLog.endLog;
+		return;
+	}
 	_workQueue.push(thread);
 };
 
