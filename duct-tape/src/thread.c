@@ -54,6 +54,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
 	thread->name = NULL;
 	thread->waiting_suspended = false;
 	thread->dying = false;
+	thread->off_task_list = false;
 	libsimple_lock_init(&thread->wake_lock);
 	LIST_INIT(&thread->user_states);
 	dtape_mutex_init(&thread->suspension_mutex);
@@ -150,10 +151,12 @@ void dtape_thread_destroy(dtape_thread_t* thread) {
 
 	lck_mtx_destroy(&thread->xnu_thread.mutex, LCK_GRP_NULL);
 
-	// remove this thread from the task's thread list
+	// remove this thread from the task's thread list, unless dtape_thread_dying() has
 	task_lock(thread->xnu_thread.task);
-	queue_remove(&thread->xnu_thread.task->threads, &thread->xnu_thread, thread_t, task_threads);
-	thread->xnu_thread.task->thread_count--;
+	if (!thread->off_task_list) {
+		queue_remove(&thread->xnu_thread.task->threads, &thread->xnu_thread, thread_t, task_threads);
+		thread->xnu_thread.task->thread_count--;
+	}
 	task_unlock(thread->xnu_thread.task);
 
 	task_deallocate(thread->xnu_thread.task);
@@ -479,6 +482,11 @@ void dtape_thread_sigexc_exit(dtape_thread_t* thread) {
 	free(user_state);
 };
 
+// Process::notifyDead() calls this from the main loop, which has no microthread: dtape_mutex_lock() then spins (and logs
+// "Trying to lock mutex without an active thread!") until the mutex is free. That ends only because no holder of
+// suspension_mutex or the task lock blocks while it holds it (thread_wait()'s condvar wait releases suspension_mutex,
+// and duct-tape's task_wait_locked() is a stub). A task_wait_locked() that waits with the task locked, as XNU's does,
+// would freeze the main loop when a process dies during a task_suspend().
 void dtape_thread_dying(dtape_thread_t* thread) {
 	thread_lock(&thread->xnu_thread);
 	cancel_wait_timer(&thread->xnu_thread);
@@ -495,6 +503,17 @@ void dtape_thread_dying(dtape_thread_t* thread) {
 	thread->dying = true;
 	dtape_mutex_unlock(&thread->suspension_mutex);
 	dtape_condvar_signal(&thread->suspension_condvar, SIZE_MAX);
+
+	// Off its task's thread list, as XNU's thread_terminate_daemon() takes a terminated thread once it has stopped running:
+	// task_threads() no longer lists it. A dead thread darlingserver keeps until its process dies (a main thread that
+	// exited, as dispatch_main() leaves it) is released later; dtape_thread_destroy() then leaves the list alone.
+	task_lock(thread->xnu_thread.task);
+	if (!thread->off_task_list) {
+		queue_remove(&thread->xnu_thread.task->threads, &thread->xnu_thread, thread_t, task_threads);
+		thread->xnu_thread.task->thread_count--;
+		thread->off_task_list = true;
+	}
+	task_unlock(thread->xnu_thread.task);
 };
 
 thread_t current_thread(void) {
