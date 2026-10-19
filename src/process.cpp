@@ -358,15 +358,21 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 	auto newThread = dtape_thread_create(_dtapeTask, mainThread->_nstid, mainThread.get());
 	mainThread->_dtapeThread = newThread;
 
-	// destroy the main thread's old S2C semaphores
-	dtape_semaphore_destroy(mainThread->_s2cPerformSempahore);
-	mainThread->_s2cPerformSempahore = nullptr;
-	dtape_semaphore_destroy(mainThread->_s2cReplySempahore);
-	mainThread->_s2cReplySempahore = nullptr;
-	dtape_semaphore_destroy(mainThread->_s2cInterruptEnterSemaphore);
-	mainThread->_s2cInterruptEnterSemaphore = nullptr;
-	dtape_semaphore_destroy(mainThread->_s2cInterruptExitSemaphore);
-	mainThread->_s2cInterruptExitSemaphore = nullptr;
+	// destroy the main thread's old S2C semaphores: taken under the thread's lock, as _s2cPerform() retains them under
+	// it, and _scheduleRelease() takes them
+	dtape_semaphore_t* oldS2CSemaphores[4];
+	{
+		std::unique_lock threadLock(mainThread->_rwlock);
+		oldS2CSemaphores[0] = std::exchange(mainThread->_s2cPerformSempahore, nullptr);
+		oldS2CSemaphores[1] = std::exchange(mainThread->_s2cReplySempahore, nullptr);
+		oldS2CSemaphores[2] = std::exchange(mainThread->_s2cInterruptEnterSemaphore, nullptr);
+		oldS2CSemaphores[3] = std::exchange(mainThread->_s2cInterruptExitSemaphore, nullptr);
+	}
+	for (auto semaphore: oldS2CSemaphores) {
+		if (semaphore) {
+			dtape_semaphore_destroy(semaphore);
+		}
+	}
 
 	// replace the fork-wait semaphore with one of the new task's (a fork child's arrival raises it)
 	auto newForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
@@ -385,10 +391,15 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 	dtape_task_release(oldTask);
 
 	// create new S2C semaphores for the main thread
-	mainThread->_s2cPerformSempahore = dtape_semaphore_create(_dtapeTask, 1);
-	mainThread->_s2cReplySempahore = dtape_semaphore_create(_dtapeTask, 0);
-	mainThread->_s2cInterruptEnterSemaphore = dtape_semaphore_create(_dtapeTask, 0);
-	mainThread->_s2cInterruptExitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	auto performSemaphore = dtape_semaphore_create(_dtapeTask, 1);
+	auto replySemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	auto enterSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	auto exitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
+	std::unique_lock threadLock(mainThread->_rwlock);
+	mainThread->_s2cPerformSempahore = performSemaphore;
+	mainThread->_s2cReplySempahore = replySemaphore;
+	mainThread->_s2cInterruptEnterSemaphore = enterSemaphore;
+	mainThread->_s2cInterruptExitSemaphore = exitSemaphore;
 };
 
 void DarlingServer::Process::setPendingReplacement() {
