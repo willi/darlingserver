@@ -78,6 +78,9 @@ namespace DarlingServer {
 		Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader);
 		virtual ~Call();
 
+		// A call for the server loop to schedule its thread for, or null when there's nothing to schedule: a call with no
+		// thread, dispatched with kernelAsync(); a push_reply, consumed here; or a call queued behind its thread's pending
+		// one (an InterruptEnter, which doneWorking schedules).
 		static std::shared_ptr<Call> callFromMessage(Message&& requestMessage);
 
 		// callFromMessage for the main loop: a call that breaks the protocol is logged and dropped

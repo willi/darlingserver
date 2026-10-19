@@ -694,9 +694,13 @@ void DarlingServer::Server::_worker(std::shared_ptr<Thread> thread) {
 	thread->doWork();
 };
 
-// A thread is on the work queue once at most, as XNU's thread_setrun() puts a thread on one run queue only: its doWork()
-// sees everything scheduled before it starts. Another entry would run doWork() once too often, and one that found the
-// thread suspended in a wait would resume it with no wakeup.
+// A thread is on the work queue once at most, as XNU's thread_setrun() puts a thread on one run queue only: the entry's
+// doWork() reads the thread's state when it starts, so everything scheduled before then is one doWork(). Another entry
+// would run doWork() once too often, and one that found the thread suspended in a wait would resume it with no wakeup.
+// Thread::setPendingCall() keeps an interrupt_enter queued behind a pending call from being scheduled at all; this
+// also covers what it can't see: a wakeup's resume() and an interrupt_enter onto a call suspended in a wait (no pending
+// call, so it's scheduled) that both land before either entry's doWork() starts. A drop is that coalescing, so it's
+// expected; the warning records it.
 void DarlingServer::Server::scheduleThread(std::shared_ptr<Thread> thread) {
 	if (!thread->claimScheduling()) {
 		static DarlingServer::Log scheduleLog("schedule");

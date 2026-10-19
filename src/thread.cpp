@@ -412,7 +412,12 @@ void DarlingServer::Thread::doWork() {
 
 	_rwlock.lock();
 
-	// this doWork() sees everything scheduled before it took the lock; a scheduling from here on is another doWork()
+	// the thread is off the work queue now: a scheduling from here on is another doWork(), which reads the state it finds
+	// then. Cleared under `_rwlock`, after every scheduler's writes to the state it reads (they write it under the lock
+	// before they claim): don't move this out of the lock. When this doWork() can't act, the thread is scheduled again: a
+	// deferred one by _undeferLocked(); a call that came in while the thread was still running, by doneWorking. (A
+	// wakeup can't come then: thread_unblock() resumes under the wake lock, which the suspending thread holds until
+	// doneWorking lets it go.)
 	_scheduled = false;
 
 	if (_deferralState != DeferralState::NotDeferred) {
@@ -592,6 +597,13 @@ doneWorking:
 			_pendingCall = _pendingInterrupts.front();
 			_pendingInterrupts.pop();
 
+			Server::sharedInstance().scheduleThread(shared_from_this());
+		}
+		else if (!_terminating && !_dead && _pendingCall && !_pendingCallOverride) {
+			// a call that came in while this one ran: its reply goes out before `_running` is cleared above, and the next
+			// call's doWork() may have found the thread still running and returned, and nothing else would run it. (The
+			// same for an interrupt_enter that came while this call was suspending.) If that doWork() hasn't started yet,
+			// the claim drops this scheduling. Not with `_pendingCallOverride`: that thread resumes its interrupted call.
 			Server::sharedInstance().scheduleThread(shared_from_this());
 		}
 
