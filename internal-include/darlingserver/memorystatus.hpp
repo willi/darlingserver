@@ -43,6 +43,12 @@ namespace DarlingServer {
 		 * which the client converts), and sets `retval` to what the syscall returns on success.
 		 */
 		int control(Process& caller, int32_t command, pid_t pid, uint32_t flags, uint64_t buffer, uint64_t bufferSize, int32_t& retval);
+
+		/**
+		 * `process` has exec'd: its state starts again, as XNU's exec makes a new proc (cloneproc(), whose forkproc()
+		 * sets up every p_memstat_* field) and puts it at its band's tail.
+		 */
+		void resetForExec(Process& process);
 	};
 };
 

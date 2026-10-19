@@ -252,7 +252,7 @@ namespace DarlingServer {
 		void setGroups(const std::vector<uint32_t>& groups);
 
 		/**
-		 * memorystatus_control()'s state for this process (see memorystatus.hpp), which goes on across exec. Only
+		 * memorystatus_control()'s state for this process (see memorystatus.hpp), which starts again at exec. Only
 		 * with the memorystatus lock held.
 		 */
 		Memorystatus::State& memorystatus();

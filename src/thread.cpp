@@ -220,15 +220,14 @@ DarlingServer::Thread::~Thread() noexcept(false) {
 	}
 
 	std::unique_lock lock(_process->_rwlock);
-	auto it = _process->_threads.begin();
-	while (it != _process->_threads.end()) {
-		if (it->first == _nstid) {
-			break;
-		}
-		++it;
-	}
-	if (it == _process->_threads.end()) {
-		throw std::runtime_error("Thread was not registered with Process");
+	// A newer thread with the same TID (Linux reused it before this one's release) may have replaced this one's entry,
+	// and may even have gone already: then the entry isn't this one's to erase. Compared by owner, as this one's own
+	// weak pointer has expired by now.
+	auto it = _process->_threads.find(_nstid);
+	auto self = weak_from_this();
+	if (it == _process->_threads.end() || it->second.owner_before(self) || self.owner_before(it->second)) {
+		threadLog.debug() << *this << ": its entry was replaced by a newer thread with its TID" << threadLog.endLog;
+		return;
 	}
 	_process->_threads.erase(it);
 
@@ -1073,9 +1072,21 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 			lock.unlock();
 			s2cLog.debug() << *this << ": Sending S2C signal" << s2cLog.endLog;
 			usingInterrupt = true;
-			sendSignal(LINUX_SIGRTMIN + 1);
-			if (!dtape_semaphore_down_simple(enterSemaphore.semaphore)) {
-				// got interrupted while waiting
+			try {
+				sendSignal(LINUX_SIGRTMIN + 1);
+			} catch (...) {
+				// the next S2C call to this thread must not wait for ever for the perform semaphore
+				dtape_semaphore_up(performSemaphore.semaphore);
+				throw;
+			}
+			// A thread that dies without taking the signal never gives the green light, and only its release ends this
+			// wait. A main thread that checks out (mldr blocks every signal before the checkout) is released only with
+			// its process, and a dispatch_main() daemon's process lives on: look again every so often whether it died.
+			static constexpr uint64_t deathPollNs = 100ull * 1000 * 1000;
+			dtape_semaphore_wait_result_t entered;
+			while ((entered = dtape_semaphore_down_timed(enterSemaphore.semaphore, deathPollNs)) == dtape_semaphore_wait_result_timed_out && !isDead());
+			if (entered != dtape_semaphore_wait_result_ok) {
+				// interrupted, destroyed (its release), or dead
 				dtape_semaphore_up(performSemaphore.semaphore);
 				if (isDead()) {
 					// it never got the call
