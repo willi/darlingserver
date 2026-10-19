@@ -25,16 +25,16 @@
 #include <mutex>
 #include <system_error>
 #include <cstring>
+#include <algorithm>
 #include <string>
 #include <darlingserver/logging.hpp>
 
 static DarlingServer::Log messageLog("message");
 
-// The credentials a Message sends with (SCM_CREDENTIALS), read once: three syscalls per Message were a quarter of
-// darlingserver's CPU, as receiveMany() makes a Message for every slot it offers recvmmsg(). They don't change once
-// the first Message exists: main() drops privileges for good before it creates the Server, and darlingserver never
-// forks a process that makes Messages (its one clone() runs launchd). A stale value couldn't go unnoticed anyway: the
-// kernel refuses a send whose credentials aren't the sender's (EPERM).
+// The credentials a Message sends with (SCM_CREDENTIALS), read once: three syscalls for every Message were a large part
+// of darlingserver's CPU. They don't change once the first Message exists: main() drops privileges for good before it
+// creates the Server (and says so there), and darlingserver never forks a process that makes Messages (its one clone()
+// runs launchd).
 static const struct ucred& ourCredentials() {
 	static const struct ucred credentials = [] {
 		struct ucred creds;
@@ -588,12 +588,12 @@ bool DarlingServer::MessageQueue::receiveMany(int socket) {
 	struct mmsghdr mmsgs[16];
 	int ret = 0;
 
-	// the slots outlive the call, so a pass (each call makes at least two, the last one EAGAIN) costs a new Message only
-	// for each message it takes, not for every slot it offers. recvmmsg() fills copies of their headers, so a slot it
-	// didn't fill is as it was made.
+	// the slots outlive the call, so a pass (a call makes one per batch it takes, and a last one that ends in EAGAIN) costs
+	// a new Message only for each message it takes, not for every slot it offers. recvmmsg() fills copies of their
+	// headers, so a slot it didn't fill is as it was made.
 	auto& messages = _receiveSlots;
 	if (messages.empty()) {
-		messages.resize(sizeof(mmsgs) / sizeof(*mmsgs));
+		messages.resize(std::clamp<size_t>(_receiveWidth, 1, sizeof(mmsgs) / sizeof(*mmsgs)));
 	}
 
 	while (ret >= 0) {
@@ -602,7 +602,7 @@ bool DarlingServer::MessageQueue::receiveMany(int socket) {
 			mmsgs[i].msg_len = 0;
 		}
 
-		ret = recvmmsg(socket, mmsgs, sizeof(mmsgs) / sizeof(*mmsgs), MSG_CMSG_CLOEXEC | MSG_DONTWAIT, nullptr);
+		ret = recvmmsg(socket, mmsgs, messages.size(), MSG_CMSG_CLOEXEC | MSG_DONTWAIT, nullptr);
 
 		if (ret < 0) {
 			if (errno == EAGAIN) {

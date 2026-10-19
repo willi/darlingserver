@@ -731,7 +731,8 @@ int main(int argc, char** argv) {
 	// this is the parent
 	close(childWaitFDs[0]);
 
-	// drop our privileges
+	// drop our privileges. For good: Message reads its credentials once, when the first one is made (in the Server, below),
+	// so none may be made before this, and darlingserver's credentials may not change after it.
 	perma_drop_privileges(originalUID, originalGID);
 	prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
 
