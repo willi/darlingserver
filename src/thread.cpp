@@ -1079,7 +1079,12 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	{
 		std::unique_lock lock(_rwlock);
 
-		if (!_activeCall) {
+		// mldr makes the checkin and checkout calls, and its RPC hooks can't take an S2C call (they abort): a thread in one
+		// gets the signal, which it takes once it can (darlingserver's signals are blocked meanwhile), or never, as it dies
+		// (notifyDead() then ends the wait)
+		bool inMldrCall = _activeCall && (_activeCall->number() == Call::Number::Checkin || _activeCall->number() == Call::Number::Checkout);
+
+		if (!_activeCall || inMldrCall) {
 			// signal the thread that we want to perform an S2C call and wait for it to give us the green light
 			lock.unlock();
 			s2cLog.debug() << *this << ": Sending S2C signal" << s2cLog.endLog;
@@ -1101,7 +1106,7 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 				// interrupted, destroyed (its release), or dead
 				dtape_semaphore_up(performSemaphore.semaphore);
 				if (isDead()) {
-					// it never got the call
+					// it never got the call: another thread can take it (Process::_performS2C())
 					throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that died before taking it");
 				}
 				return std::nullopt;
@@ -1530,6 +1535,7 @@ void DarlingServer::Thread::jumpToResume(void* stack, size_t stackSize) {
 
 void DarlingServer::Thread::notifyDead() {
 	bool canRelease = false;
+	dtape_semaphore_t* enterSemaphore = nullptr;
 
 	{
 		std::unique_lock lock(_rwlock);
@@ -1550,6 +1556,17 @@ void DarlingServer::Thread::notifyDead() {
 			_terminating = true;
 			canRelease = true;
 		}
+
+		// A dead thread never gives an S2C call the green light (its signals are blocked from its checkout on), and its
+		// release may wait for its process (a main thread's): destroying the semaphore ends the waits for it, and the
+		// calls go to another thread (Process::_performS2C()).
+		enterSemaphore = std::exchange(_s2cInterruptEnterSemaphore, nullptr);
+	}
+
+	if (enterSemaphore) {
+		kernelAsync([enterSemaphore]() {
+			dtape_semaphore_destroy(enterSemaphore);
+		});
 	}
 
 	// keep ourselves alive until the duct-taped context is done
