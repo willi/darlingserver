@@ -69,6 +69,9 @@ namespace DarlingServer {
 		std::weak_ptr<Thread> _thread;
 		Address _replyAddress;
 		dserver_rpc_callhdr_t _header;
+		// mldr's checkin or thread-exit checkout, not libsystem's (the fork child's checkin, the exec's checkout): set by
+		// callFromMessage()
+		bool _madeByMldr = false;
 
 		static DarlingServer::Log rpcReplyLog;
 
@@ -93,6 +96,7 @@ namespace DarlingServer {
 		void sendErrorReply(int code);
 
 		virtual Number number() const = 0;
+		bool madeByMldr() const { return _madeByMldr; };
 		std::shared_ptr<Thread> thread() const;
 
 		virtual void processCall() = 0;

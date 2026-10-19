@@ -1043,6 +1043,9 @@ void DarlingServer::Thread::setPendingCallOverride(bool pendingCallOverride) {
 
 static DarlingServer::Log s2cLog("s2c");
 
+// ids for Thread::_s2cRequest (0 is none)
+static std::atomic<uint64_t> s2cRequestCounter{0};
+
 std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message&& call, dserver_s2c_msgnum_t expectedReplyNumber, size_t expectedReplySize) {
 	std::optional<Message> reply = std::nullopt;
 	bool usingInterrupt = false;
@@ -1079,37 +1082,66 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 	{
 		std::unique_lock lock(_rwlock);
 
-		// mldr makes the checkin and checkout calls, and its RPC hooks can't take an S2C call (they abort): a thread in one
-		// gets the signal, which it takes once it can (darlingserver's signals are blocked meanwhile), or never, as it dies
-		// (notifyDead() then ends the wait)
-		bool inMldrCall = _activeCall && (_activeCall->number() == Call::Number::Checkin || _activeCall->number() == Call::Number::Checkout);
+		// mldr's checkin and thread-exit checkout (Call::madeByMldr()) get the signal, as mldr's RPC hooks abort on an S2C
+		// call: the thread takes it once it can (darlingserver's signals are blocked meanwhile), or never, as it dies
+		// (notifyDead() then ends the wait). libsystem's checkin and checkout (fork child, exec) serve one inline. mldr's
+		// vchroot_path, set_dyld_info and set_executable_path stay on the socket: they come milliseconds after the
+		// process starts, before anything holds its task port for VM calls.
+		bool inMldrCall = _activeCall && _activeCall->madeByMldr();
 
 		if (!_activeCall || inMldrCall) {
 			// signal the thread that we want to perform an S2C call and wait for it to give us the green light
+			if (_s2cInterruptEnterSemaphore != enterSemaphore.semaphore) {
+				// it died since we retained them (notifyDead()), or an exec swapped them (_replaceTaskAfterExec())
+				const bool dead = _dead;
+				lock.unlock();
+				dtape_semaphore_up(performSemaphore.semaphore);
+				if (dead) {
+					throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that died before taking it");
+				}
+				return std::nullopt;
+			}
+			// the request S2CPerform takes; withdrawn below if we stop waiting, so a signal that comes late is answered
+			// at once rather than waiting for a call that isn't coming
+			const uint64_t request = ++s2cRequestCounter;
+			_s2cRequest = request;
 			lock.unlock();
 			s2cLog.debug() << *this << ": Sending S2C signal" << s2cLog.endLog;
 			usingInterrupt = true;
 			try {
 				sendSignal(LINUX_SIGRTMIN + 1);
 			} catch (...) {
+				lock.lock();
+				if (_s2cRequest == request) {
+					_s2cRequest = 0;
+				}
+				lock.unlock();
 				// the next S2C call to this thread must not wait for ever for the perform semaphore
 				dtape_semaphore_up(performSemaphore.semaphore);
 				throw;
 			}
-			// A thread that dies without taking the signal never gives the green light, and only its release ends this
-			// wait. A main thread that checks out (mldr blocks every signal before the checkout) is released only with
-			// its process, and a dispatch_main() daemon's process lives on: look again every so often whether it died.
-			static constexpr uint64_t deathPollNs = 100ull * 1000 * 1000;
-			dtape_semaphore_wait_result_t entered;
-			while ((entered = dtape_semaphore_down_timed(enterSemaphore.semaphore, deathPollNs)) == dtape_semaphore_wait_result_timed_out && !isDead());
-			if (entered != dtape_semaphore_wait_result_ok) {
-				// interrupted, destroyed (its release), or dead
-				dtape_semaphore_up(performSemaphore.semaphore);
-				if (isDead()) {
-					// it never got the call: another thread can take it (Process::_performS2C())
-					throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that died before taking it");
+			// A thread that dies without taking the signal never gives the green light: notifyDead() destroys the enter
+			// semaphore, which ends this wait (as does the thread's release, and an exec's swap).
+			if (!dtape_semaphore_down_simple(enterSemaphore.semaphore)) {
+				lock.lock();
+				const bool taken = _s2cTaken == request;
+				if (_s2cRequest == request) {
+					_s2cRequest = 0;
 				}
-				return std::nullopt;
+				lock.unlock();
+				// S2CPerform took it (it raises this semaphore next, unless it's gone): wait for that green light
+				if (!(taken && dtape_semaphore_down_simple(enterSemaphore.semaphore))) {
+					if (taken) {
+						// S2CPerform waits for us
+						dtape_semaphore_up(exitSemaphore.semaphore);
+					}
+					dtape_semaphore_up(performSemaphore.semaphore);
+					if (isDead()) {
+						// it never got the call: another thread can take it (Process::_performS2C())
+						throw std::system_error(ESRCH, std::generic_category(), "S2C call to a thread that died before taking it");
+					}
+					return std::nullopt;
+				}
 			}
 			s2cLog.debug() << *this << ": Got green light to perform S2C call" << s2cLog.endLog;
 			lock.lock();
@@ -1536,6 +1568,7 @@ void DarlingServer::Thread::jumpToResume(void* stack, size_t stackSize) {
 void DarlingServer::Thread::notifyDead() {
 	bool canRelease = false;
 	dtape_semaphore_t* enterSemaphore = nullptr;
+	dtape_thread_t* semaphoreOwner = nullptr;
 
 	{
 		std::unique_lock lock(_rwlock);
@@ -1558,14 +1591,23 @@ void DarlingServer::Thread::notifyDead() {
 		}
 
 		// A dead thread never gives an S2C call the green light (its signals are blocked from its checkout on), and its
-		// release may wait for its process (a main thread's): destroying the semaphore ends the waits for it, and the
-		// calls go to another thread (Process::_performS2C()).
+		// release may wait for its process (a main thread's): destroying the enter semaphore ends a waiting call at once,
+		// and it goes to another thread (Process::_performS2C()).
+		// The rule every S2C-semaphore destroy keeps: the semaphores belong to the thread's duct-taped task, and are
+		// destroyed only while a reference to that task is held (dtape_semaphore_destroy() locks it). _scheduleRelease()
+		// destroys them before it releases the duct-taped thread, exec before it releases the old task; this job runs on
+		// its own, so it holds a reference to the duct-taped thread (and so its task) until it's done.
 		enterSemaphore = std::exchange(_s2cInterruptEnterSemaphore, nullptr);
+		if (enterSemaphore) {
+			semaphoreOwner = _dtapeThread;
+			dtape_thread_retain(semaphoreOwner);
+		}
 	}
 
 	if (enterSemaphore) {
-		kernelAsync([enterSemaphore]() {
+		kernelAsync([enterSemaphore, semaphoreOwner]() {
 			dtape_semaphore_destroy(enterSemaphore);
+			dtape_thread_release(semaphoreOwner);
 		});
 	}
 

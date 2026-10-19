@@ -111,6 +111,11 @@ namespace DarlingServer {
 		bool _handlingInterruptedCall = false;
 		dtape_semaphore_t* _s2cInterruptEnterSemaphore = nullptr;
 		dtape_semaphore_t* _s2cInterruptExitSemaphore = nullptr;
+		// the S2C call waiting for this thread's green light (signal path), 0 for none: S2CPerform takes it, a caller that
+		// stops waiting withdraws it, and exec voids it. A stale signal (its caller gone) then finds none and is answered at once.
+		uint64_t _s2cRequest = 0;
+		// the last request S2CPerform took
+		uint64_t _s2cTaken = 0;
 		bool _deferReplyForS2C = false;
 		std::optional<Message> _deferredReply = std::nullopt;
 
