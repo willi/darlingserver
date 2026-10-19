@@ -31,6 +31,7 @@
 #include <darlingserver/memorystatus.hpp>
 #include <algorithm>
 #include <cstring>
+#include <rtsig.h>
 
 static DarlingServer::Log callLog("calls");
 
@@ -789,6 +790,8 @@ void DarlingServer::Call::PthreadKill::processCall() {
 void DarlingServer::Call::PthreadCanceled::processCall() {
 	int code = 0;
 
+	// unused: since cancel-xnu, libsystem_kernel answers pthread_canceled from the thread's own flags
+	// (bsdthread/cancelable.h), and it always ships with this server
 	callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
 	code = -ENOSYS;
 
@@ -798,11 +801,21 @@ void DarlingServer::Call::PthreadCanceled::processCall() {
 void DarlingServer::Call::PthreadMarkcancel::processCall() {
 	int code = 0;
 
-	if (auto targetThread = Thread::threadForPort(_body.thread_port)) {
-		callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
-		code = -ENOSYS;
-	} else {
+	// XNU's __pthread_markcancel (bsd/kern/kern_sig.c 992-1022) takes a thread of the caller's own task only
+	// (PORT_TO_THREAD_IN_CURRENT_TASK). The marking itself is the target's: its flags are in its own memory, so the
+	// signal's handler there sets them and interrupts the cancelable syscall it may be blocked in (libsystem_kernel's
+	// sigexc.c, SIGNAL_PTHREAD_CANCEL, which is 36: glibc keeps 32 and 33, and Darling's own two are 34 and 35).
+	auto targetThread = Thread::threadForPort(_body.thread_port);
+	auto thread = _thread.lock();
+	if (!targetThread || !thread || !thread->process() || targetThread->process() != thread->process()) {
 		code = -ESRCH;
+	} else {
+		static_assert(36 > LINUX_SIGRTMIN + 1, "Darling's own real-time signals");
+		try {
+			targetThread->sendSignal(36);
+		} catch (std::system_error e) {
+			code = -e.code().value();
+		}
 	}
 
 	_sendReply(code);
