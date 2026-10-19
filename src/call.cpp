@@ -28,6 +28,7 @@
 #include <sys/fcntl.h>
 #include <sys/syscall.h>
 #include <darlingserver/kqchan.hpp>
+#include <darlingserver/memorystatus.hpp>
 #include <algorithm>
 #include <cstring>
 
@@ -1339,6 +1340,24 @@ void DarlingServer::Call::Groups::processCall() {
 	}
 
 	_sendReply(code, oldGroups.size());
+};
+
+void DarlingServer::Call::MemorystatusControl::processCall() {
+	int code = 0;
+	int32_t retval = 0;
+
+	if (auto thread = _thread.lock()) {
+		if (auto process = thread->process()) {
+			// a Linux errno, which the client converts, as every call's
+			code = -Memorystatus::control(*process, _body.command, _body.pid, _body.flags, _body.buffer, _body.buffer_size, retval);
+		} else {
+			code = -ESRCH;
+		}
+	} else {
+		code = -ESRCH;
+	}
+
+	_sendReply(code, retval);
 };
 
 void DarlingServer::Call::DebugListProcesses::processCall() {

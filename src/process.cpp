@@ -346,6 +346,9 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 	// update the process architecture
 	_architecture = architecture;
 
+	// a new image: XNU's exec makes a new proc, with memorystatus's state as forkproc() sets it up
+	Memorystatus::resetForExec(*this);
+
 	// replace the old task with a new task that inherits from it
 	auto oldTask = _dtapeTask;
 	auto newTask = dtape_task_create(oldTask, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
@@ -899,6 +902,10 @@ bool DarlingServer::Process::isDead() const {
 std::vector<uint32_t> DarlingServer::Process::groups() const {
 	std::shared_lock lock(_rwlock);
 	return _groups;
+};
+
+DarlingServer::Memorystatus::State& DarlingServer::Process::memorystatus() {
+	return _memorystatus;
 };
 
 void DarlingServer::Process::setGroups(const std::vector<uint32_t>& groups) {

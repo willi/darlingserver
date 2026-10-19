@@ -714,6 +714,17 @@ calls = [
 	('kprintf_logged', [], [
 		('logged', 'bool'),
 	]),
+
+	# memorystatus_control() (see memorystatus.hpp); the code is 0 or a negative Linux errno
+	('memorystatus_control', [
+		('command', 'int32_t'),
+		('pid', 'int32_t'),
+		('flags', 'uint32_t'),
+		('buffer', 'void*', 'uint64_t'),
+		('buffer_size', 'uint64_t'),
+	], [
+		('retval', 'int32_t'),
+	]),
 ]
 
 ALLOWED_PRIVATE_TYPES = [
