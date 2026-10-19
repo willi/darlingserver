@@ -351,6 +351,10 @@ void DarlingServer::Call::sendErrorReply(Address replyAddress, uint32_t callNumb
 	sendReply(std::move(reply));
 };
 
+void DarlingServer::Call::sendErrorReply(int code) {
+	sendErrorReply(_replyAddress, _header.number, code);
+};
+
 DarlingServer::Call::Call(std::shared_ptr<Thread> thread, Address replyAddress, dserver_rpc_callhdr_t* callHeader):
 	_thread(thread),
 	_replyAddress(replyAddress),
@@ -560,9 +564,18 @@ void DarlingServer::Call::MachReplyPort::processCall() {
 	_sendReply(0, machReplyPort);
 };
 
+static DarlingServer::Log kprintfLog("kprintf");
+// the level kprintf strings are logged at, which kprintf_logged answers for
+static constexpr DarlingServer::Log::Type kprintfLevel = DarlingServer::Log::Type::Info;
+
 void DarlingServer::Call::Kprintf::processCall() {
-	static auto kprintfLog = Log("kprintf");
 	int code = 0;
+
+	// a client that doesn't ask kprintf_logged (mldr, an older image) pays for the call, not for reading the string
+	if (!kprintfLog.willLog(kprintfLevel)) {
+		_sendReply(0);
+		return;
+	}
 
 	if (auto thread = _thread.lock()) {
 		if (auto process = thread->process()) {
@@ -578,7 +591,7 @@ void DarlingServer::Call::Kprintf::processCall() {
 					}
 					tmp[len] = '\0';
 
-					kprintfLog.info() << tmp << kprintfLog.endLog;
+					kprintfLog.stream(kprintfLevel) << tmp << kprintfLog.endLog;
 				} else {
 					// readMemory returns a positive error code, but we want a negative one
 					code = -code;
@@ -596,6 +609,10 @@ void DarlingServer::Call::Kprintf::processCall() {
 	}
 
 	_sendReply(code);
+};
+
+void DarlingServer::Call::KprintfLogged::processCall() {
+	_sendReply(0, kprintfLog.willLog(kprintfLevel));
 };
 
 void DarlingServer::Call::StartedSuspended::processCall() {

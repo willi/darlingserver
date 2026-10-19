@@ -266,6 +266,10 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Thread::pendingCall() const 
 
 void DarlingServer::Thread::setPendingCall(std::shared_ptr<Call> newPendingCall) {
 	std::unique_lock lock(_rwlock);
+	if (newPendingCall && _dead) {
+		// it would never be processed (see _answerUnprocessedCallsLocked())
+		throw ProtocolError("Call from a thread that has died", -ESRCH);
+	}
 	if (newPendingCall && _pendingCall) {
 		if (newPendingCall->number() == Call::Number::InterruptEnter) {
 			// InterruptEnter calls can occur after we receive a call but before we start processing it,
@@ -561,6 +565,11 @@ doneWorking:
 		_rwlock.unlock();
 		notifyDead();
 	} else {
+		if (_dead) {
+			// what came in while it ran the call that killed it (notifyDead() took the rest)
+			_answerUnprocessedCallsLocked(true);
+		}
+
 		// if we have any pending interrupts, schedule them to be processed now
 		// (we've just finished or suspended a call, so now's the time to handle interrupts)
 		if (!_terminating && !_dead && !_pendingInterrupts.empty()) {
@@ -1470,6 +1479,10 @@ void DarlingServer::Thread::notifyDead() {
 		threadLog.info() << *this << ": thread dying" << threadLog.endLog;
 		_dead = true;
 
+		// A call running on another worker may still make its pending call active; the current thread's can't.
+		// Answered now, these go out before the reply to the call that killed it (a checkout answers after this).
+		_answerUnprocessedCallsLocked(!_running || currentThreadVar.get() == this);
+
 		if (!_activeCall) {
 			// if we have no active call, we won't ever need to run again,
 			// so set `_terminating` to make sure that doesn't happen
@@ -1490,6 +1503,27 @@ void DarlingServer::Thread::notifyDead() {
 	}
 
 	threadRegistry().unregisterEntry(shared_from_this());
+};
+
+// A dead thread runs no call it hasn't started (doWork()), so these would never be answered: an interrupt_enter queued
+// behind the call it interrupted (setPendingCall()) waited for ever, and so did the signal handler that made it. They
+// fail with ESRCH, as a call from a thread darlingserver doesn't know does. A signal handler waiting for its
+// interrupt_enter gets that before the reply to the call it interrupted, which the interrupted call then takes itself.
+void DarlingServer::Thread::_answerUnprocessedCallsLocked(bool includingPendingCall) {
+	auto answer = [&](const std::shared_ptr<Call>& call) {
+		const char* name = Call::callNumberToString(call->number());
+		threadLog.info() << *this << ": answering call " << (name ? name : "unknown") << ", which it will never run, with ESRCH" << threadLog.endLog;
+		call->sendErrorReply(-ESRCH);
+	};
+
+	if (includingPendingCall && _pendingCall) {
+		answer(_pendingCall);
+		_pendingCall = nullptr;
+	}
+	while (!_pendingInterrupts.empty()) {
+		answer(_pendingInterrupts.front());
+		_pendingInterrupts.pop();
+	}
 };
 
 bool DarlingServer::Thread::isDead() const {

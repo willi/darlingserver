@@ -140,6 +140,7 @@ namespace DarlingServer {
 
 		void _dispose();
 		void _scheduleRelease();
+		void _answerUnprocessedCallsLocked(bool includingPendingCall);
 
 		static void _handleInterruptEnterForCurrentThread();
 

@@ -53,6 +53,7 @@ dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* con
 	thread->processing_signal = false;
 	thread->name = NULL;
 	thread->waiting_suspended = false;
+	thread->dying = false;
 	libsimple_lock_init(&thread->wake_lock);
 	LIST_INIT(&thread->user_states);
 	dtape_mutex_init(&thread->suspension_mutex);
@@ -486,6 +487,14 @@ void dtape_thread_dying(dtape_thread_t* thread) {
 	thread->xnu_thread.wait_result = THREAD_INTERRUPTED;
 	clear_wait_internal(&thread->xnu_thread, THREAD_INTERRUPTED);
 	thread_unlock(&thread->xnu_thread);
+
+	// It will never say it has suspended now: let a thread_wait() for it return, as XNU's does once a thread is off CPU
+	// (and a terminated one never runs again). darlingserver may be suspending it as it checks out, with the signal
+	// it sends for that blocked (mldr blocks every signal before the checkout), or after its Linux thread has gone.
+	dtape_mutex_lock(&thread->suspension_mutex);
+	thread->dying = true;
+	dtape_mutex_unlock(&thread->suspension_mutex);
+	dtape_condvar_signal(&thread->suspension_condvar, SIZE_MAX);
 };
 
 thread_t current_thread(void) {
@@ -1560,7 +1569,7 @@ void thread_release(thread_t xthread) {
 void thread_wait(thread_t xthread, boolean_t until_not_runnable) {
 	dtape_thread_t* thread = dtape_thread_for_xnu_thread(xthread);
 	dtape_mutex_lock(&thread->suspension_mutex);
-	while (!thread->waiting_suspended) {
+	while (!thread->waiting_suspended && !thread->dying) {
 		dtape_condvar_wait(&thread->suspension_condvar, &thread->suspension_mutex);
 	}
 	dtape_mutex_unlock(&thread->suspension_mutex);

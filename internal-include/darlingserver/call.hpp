@@ -86,6 +86,8 @@ namespace DarlingServer {
 		// answers a call with only a reply header: its number and `code`, a negative errno. The client's wrapper
 		// returns that code.
 		static void sendErrorReply(Address replyAddress, uint32_t callNumber, int code);
+		// the same, for a call that will never be processed
+		void sendErrorReply(int code);
 
 		virtual Number number() const = 0;
 		std::shared_ptr<Thread> thread() const;
