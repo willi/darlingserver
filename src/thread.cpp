@@ -873,7 +873,12 @@ static void kernelAsyncRunnerThreadWorker(bool permanent, std::shared_ptr<Darlin
 	} while (permanent);
 
 	self = nullptr;
-	DarlingServer::Thread::currentThread()->terminate();
+	// terminate() never returns, so this frame never ends: a shared_ptr temporary in it (currentThread()'s return value)
+	// would keep the thread, and with it this 64K stack and its guard pages, for ever. currentThreadVar holds the thread
+	// until it is back at its top. Every temporary runner leaked so, until the mappings reached vm.max_map_count and the
+	// next stack's mmap() failed: an uncaught ENOMEM aborted darlingserver.
+	DarlingServer::Thread* thread = DarlingServer::Thread::currentThread().get();
+	thread->terminate();
 	__builtin_unreachable();
 };
 
