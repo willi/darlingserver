@@ -95,8 +95,8 @@ extern int __dserver_main_thread_socket_fd;
 static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
 	sigset_t set;
 	sigfillset(&set);
-	sigdelset(&set, LINUX_SIGRTMIN);
-	sigdelset(&set, LINUX_SIGRTMIN + 1);
+	sigdelset(&set, SIGNAL_SIGEXC_SUSPEND);
+	sigdelset(&set, SIGNAL_S2C);
 	pthread_sigmask(SIG_BLOCK, &set, atomic_save);
 };
 

@@ -814,15 +814,14 @@ void DarlingServer::Call::PthreadMarkcancel::processCall() {
 	// XNU's __pthread_markcancel (bsd/kern/kern_sig.c 992-1022) takes a thread of the caller's own task only
 	// (PORT_TO_THREAD_IN_CURRENT_TASK). The marking itself is the target's: its flags are in its own memory, so the
 	// signal's handler there sets them and interrupts the cancelable syscall it may be blocked in (libsystem_kernel's
-	// sigexc.h, SIGNAL_PTHREAD_CANCEL: LINUX_SIGRTMIN + 2, after Darling's SUSPEND and S2C).
+	// sigexc.c and bsdthread/cancelable.h).
 	auto targetThread = Thread::threadForPort(_body.thread_port);
 	auto thread = _thread.lock();
 	if (!targetThread || !thread || !thread->process() || targetThread->process() != thread->process()) {
 		code = -ESRCH;
 	} else {
-		static_assert(LINUX_SIGRTMIN + 2 <= LINUX_SIGRTMAX, "a real-time signal of its own");
 		try {
-			targetThread->sendSignal(LINUX_SIGRTMIN + 2);
+			targetThread->sendSignal(SIGNAL_PTHREAD_CANCEL);
 		} catch (std::system_error e) {
 			code = -e.code().value();
 		}
