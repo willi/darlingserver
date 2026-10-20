@@ -195,6 +195,13 @@ void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* pare
 	task_unlock(&task->xnu_task);
 };
 
+void dtape_task_set_eternal_id(dtape_task_t* task, uint64_t eid) {
+	task_lock(&task->xnu_task);
+	task->p_ident.eid = eid;
+	task_unlock(&task->xnu_task);
+	dtape_bank_task_set_unique_pid(&task->xnu_task, eid);
+};
+
 void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_uid, int* old_gid) {
 	task_lock(&task->xnu_task);
 	if (old_uid) {

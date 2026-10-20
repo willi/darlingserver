@@ -130,6 +130,10 @@ void bank_task_initialize(task_t task) {
 	}
 };
 
+void dtape_bank_task_set_unique_pid(task_t task, uint64_t unique_pid) {
+	get_bank_task_context(task)->bt_unique_pid = unique_pid;
+};
+
 void bank_task_destroy(task_t task) {
 	bank_task_t bank_task = task->bank_context;
 	task->bank_context = BANK_TASK_NULL;

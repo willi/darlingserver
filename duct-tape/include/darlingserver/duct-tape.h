@@ -85,6 +85,9 @@ void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_ui
 // the process's unique ID and its parent's (eternal IDs, like XNU's p_uniqueid and p_puniqueid), and the task's
 // pidversion (audit_token.val[7], like XNU's p_idversion)
 void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* parent_unique_id, uint32_t* pidversion);
+// sets the process's unique ID (XNU's p_uniqueid), which the process registry assigns only after the task exists, in
+// the task and its bank context
+void dtape_task_set_eternal_id(dtape_task_t* task, uint64_t eid);
 
 /**
  * Makes a fileport for the given descriptor in the given task and returns its name in `out_name`. The fileport owns

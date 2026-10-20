@@ -129,8 +129,13 @@ DarlingServer::EternalID DarlingServer::Process::eternalID() const {
 	return _eid;
 };
 
+// The registry assigns the ID once the process exists, after its task copied the ID it had then. A fork's task is
+// never made again (an exec's is, from this one), so it gets the ID here, before the process can be looked up.
 void DarlingServer::Process::_setEternalID(EternalID eid) {
 	_eid = eid;
+	if (_dtapeTask) {
+		dtape_task_set_eternal_id(_dtapeTask, eid);
+	}
 };
 
 std::vector<std::shared_ptr<DarlingServer::Thread>> DarlingServer::Process::threads() const {

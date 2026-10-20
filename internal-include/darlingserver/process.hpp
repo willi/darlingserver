@@ -93,7 +93,8 @@ namespace DarlingServer {
 	private:
 		pid_t _pid;
 		pid_t _nspid;
-		EternalID _eid;
+		// until the registry assigns it: not an indeterminate value for the task to copy
+		EternalID _eid = EternalIDInvalid;
 		std::shared_ptr<FD> _pidfd;
 		mutable std::shared_mutex _rwlock;
 		std::unordered_map<uint64_t, std::weak_ptr<Thread>> _threads;

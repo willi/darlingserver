@@ -77,7 +77,7 @@ namespace DarlingServer {
 
 		pid_t _tid;
 		pid_t _nstid;
-		EternalID _eid;
+		EternalID _eid = EternalIDInvalid;
 		std::shared_ptr<Process> _process;
 		std::shared_ptr<Call> _pendingCall;
 		Address _address;
