@@ -801,8 +801,8 @@ void DarlingServer::Call::PthreadCanceled::processCall() {
 	int code = 0;
 
 	// unused: since cancel-xnu, libsystem_kernel answers pthread_canceled from the thread's own flags
-	// (bsdthread/cancelable.h), and it always ships with this server
-	callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
+	// (bsdthread/cancelable.h), and it always ships with this server. The call stays: the call list only grows.
+	callLog.warning() << __PRETTY_FUNCTION__ << ": unused since cancel-xnu (libsystem_kernel answers it)" << callLog.endLog;
 	code = -ENOSYS;
 
 	_sendReply(code);
