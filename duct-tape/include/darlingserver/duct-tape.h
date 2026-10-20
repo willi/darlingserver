@@ -85,7 +85,31 @@ void dtape_thread_sigexc_exit(dtape_thread_t* thread);
 void dtape_thread_sigexc_enter2(dtape_thread_t* thread);
 void dtape_thread_dying(dtape_thread_t* thread);
 
+// sets the task's uid and gid (a negative one is no change) and returns the old ones. Darling keeps one uid and one gid
+// per process, so they are both the real and the effective ids of the audit token, as XNU's setuid() as root sets both;
+// the task's security token (the trailers' msgh_sender) follows them, as XNU's set_security_token() does.
 void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_uid, int* old_gid);
+
+// a process's audit session, as XNU's auditinfo_addr_t (bsm/audit.h): auid and asid are its audit token's val[0] and
+// val[6]; the rest is kept beside the token. Inherited at fork and exec.
+typedef struct dtape_audit_session {
+	uint32_t auid;
+	uint32_t mask_success;
+	uint32_t mask_failure;
+	uint32_t termid_port;
+	uint32_t termid_type;
+	uint32_t termid_addr[4];
+	int32_t asid;
+	uint64_t flags;
+} dtape_audit_session_t;
+
+// XNU's getaudit_addr(): the task's session; a caller that isn't root sees the masks as ~0
+void dtape_task_audit_session_get(dtape_task_t* task, dtape_audit_session_t* out);
+// XNU's setaudit_addr() and audit_session_setaia(): root only (-EPERM), a known terminal type (-EINVAL), an existing
+// session's audit ID, terminal ID and flags immutable once set (-EINVAL); asid AU_ASSIGN_ASID (or AU_DEFAUDITSID) gets a
+// new session ID from 100000 up. On success the session is the task's, and `session` holds what was set (the asid
+// assigned). Returns 0 or a negative errno.
+int dtape_task_audit_session_set(dtape_task_t* task, dtape_audit_session_t* session);
 // the process's unique ID and its parent's (eternal IDs, like XNU's p_uniqueid and p_puniqueid), and the task's
 // pidversion (audit_token.val[7], like XNU's p_idversion)
 void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* parent_unique_id, uint32_t* pidversion);

@@ -484,8 +484,10 @@ void dtape_thread_sigexc_exit(dtape_thread_t* thread) {
 
 // Process::notifyDead() calls this from the main loop, which has no microthread: dtape_mutex_lock() then spins (and logs
 // "Trying to lock mutex without an active thread!") until the mutex is free. That ends only because no holder of
-// suspension_mutex or the task lock blocks while it holds it (thread_wait()'s condvar wait releases suspension_mutex,
-// and duct-tape's task_wait_locked() is a stub). A task_wait_locked() that waits with the task locked, as XNU's does,
+// suspension_mutex or the task lock waits on anything only the main loop can deliver: none takes a registry lock or
+// waits for a message or event the main loop sends, directly or through a lock it waits for (thread_wait()'s condvar
+// wait releases suspension_mutex, and duct-tape's task_wait_locked() is a stub). A task-lock holder may wait on other
+// dtape mutexes (task_suspend()'s thread and port locks), which worker threads release. A task_wait_locked() that waits with the task locked, as XNU's does,
 // would freeze the main loop when a process dies during a task_suspend().
 void dtape_thread_dying(dtape_thread_t* thread) {
 	thread_lock(&thread->xnu_thread);

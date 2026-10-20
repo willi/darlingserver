@@ -712,6 +712,40 @@ void DarlingServer::Call::Uidgid::processCall() {
 	_sendReply(code, uid, gid);
 };
 
+void DarlingServer::Call::AuditSession::processCall() {
+	int code = 0;
+	dtape_audit_session_t session = {};
+
+	if (auto thread = _thread.lock()) {
+		if (auto process = thread->process()) {
+			// HACK: like Uidgid, this reaches into the process's task
+			if (_body.set) {
+				session.auid = _body.auid;
+				session.mask_success = _body.mask_success;
+				session.mask_failure = _body.mask_failure;
+				session.termid_port = _body.termid_port;
+				session.termid_type = _body.termid_type;
+				session.termid_addr[0] = _body.termid_addr0;
+				session.termid_addr[1] = _body.termid_addr1;
+				session.termid_addr[2] = _body.termid_addr2;
+				session.termid_addr[3] = _body.termid_addr3;
+				session.asid = _body.asid;
+				session.flags = _body.flags;
+				code = dtape_task_audit_session_set(process->_dtapeTask, &session);
+			}
+			dtape_task_audit_session_get(process->_dtapeTask, &session);
+		} else {
+			code = -ESRCH;
+		}
+	} else {
+		code = -ESRCH;
+	}
+
+	_sendReply(code, session.auid, session.mask_success, session.mask_failure, session.termid_port, session.termid_type,
+		session.termid_addr[0], session.termid_addr[1], session.termid_addr[2], session.termid_addr[3], session.asid,
+		session.flags);
+};
+
 void DarlingServer::Call::SetThreadHandles::processCall() {
 	int code = 0;
 
