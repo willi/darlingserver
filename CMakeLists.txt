@@ -66,6 +66,11 @@ else()
 	)
 endif()
 
+# darlingserver's threads run at this nice value (0: unchanged). Every Mach call and trap of every Darling process waits
+# for it, as on XNU a call runs in the caller's own context and never queues behind other user threads; it only runs on
+# behalf of its callers, so it can't take the CPU from the desktop on its own.
+set(DSERVER_NICE "-10" CACHE STRING "Nice value for darlingserver's threads (0 leaves it unchanged)")
+
 option(DSERVER_SINGLE_THREADED "Only use a single thread per workqueue in darlingserver" ON)
 
 if (DSERVER_SINGLE_THREADED)
@@ -176,6 +181,10 @@ install(TARGETS darlingserver DESTINATION bin)
 #	"${DARLING_ROOT_RELATIVE_TO_SDK}/../../../src/darlingserver/include/darlingserver/rpc.h"
 #	"${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/darlingserver/rpc.h"
 #)
+
+target_compile_definitions(darlingserver PRIVATE
+	DSERVER_NICE=${DSERVER_NICE}
+)
 
 if (NOT "${DARLINGSERVER_INIT_PROCESS}" STREQUAL "")
 	target_compile_definitions(darlingserver PRIVATE
