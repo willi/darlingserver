@@ -5,7 +5,6 @@ cmake_minimum_required(VERSION 3.13)
 option(DSERVER_TOOLS "Build darlingserver tools (for debugging)" OFF)
 option(DSERVER_ASAN "Build darlingserver with ASAN" OFF)
 option(DSERVER_UBSAN "Build darlingserver with UBSAN" OFF)
-
 if (DSERVER_TOOLS)
 	add_subdirectory(tools)
 endif()
@@ -54,6 +53,21 @@ else()
 	add_compile_definitions(
 		DSERVER_EXTENDED_DEBUG=0
 	)
+endif()
+
+# Darling builds with no CMAKE_BUILD_TYPE by default, so with no -O flag at all: clang's -O0. darlingserver is the one
+# process every Mach call and trap of every Darling process goes through, so its cost per call is every caller's; XNU
+# itself builds at -O2 (makedefs/MakeInc.def). This applies to darlingserver and duct-tape (the targets below; not the
+# tools above, nor Darling's libsimple), only when the build chose no optimization itself: no build type, no -O in the
+# C or C++ flags, and no debug or sanitizer build. Line tables and frame pointers keep gdb backtraces and perf call
+# graphs usable.
+option(DSERVER_OPTIMIZE "Build darlingserver and its duct-tape at -O2 when the build sets no optimization" ON)
+
+if (DSERVER_OPTIMIZE AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES
+		AND NOT DSERVER_ASAN AND NOT DSERVER_UBSAN AND NOT DSERVER_EXTENDED_DEBUG
+		AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "(^| )-O")
+	message(STATUS "darlingserver: -O2 (DSERVER_OPTIMIZE)")
+	add_compile_options(-O2 -gline-tables-only -fno-omit-frame-pointer)
 endif()
 
 option(DSERVER_SINGLE_THREADED "Only use a single thread per workqueue in darlingserver" ON)
