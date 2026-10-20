@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <darlingserver/server.hpp>
+#include <darlingserver/callhist.hpp>
 #include <sys/socket.h>
 #include <stdexcept>
 #include <errno.h>
@@ -586,6 +587,10 @@ void DarlingServer::Server::start() {
 			throw std::system_error(errno, std::generic_category(), "Failed to wait on epoll context");
 		}
 
+		if (ret > 0) {
+			CallHist::countEvent(CallHist::Event::EpollWakeup);
+		}
+
 		for (size_t i = 0; i < ret; ++i) {
 			struct epoll_event* event = &events[i];
 
@@ -628,6 +633,7 @@ void DarlingServer::Server::start() {
 				lock.unlock();
 
 				// dtape_timer_fired() calls duct-taped functions that may need to wait (briefly), so it needs to be called in a microthread
+				CallHist::countEvent(CallHist::Event::TimerFired);
 				Thread::kernelAsync(dtape_timer_fired);
 			} else {
 				Monitor* monitor = static_cast<Monitor*>(event->data.ptr);
@@ -700,6 +706,7 @@ std::string DarlingServer::Server::prefix() const {
 };
 
 void DarlingServer::Server::_worker(std::shared_ptr<Thread> thread) {
+	CallHist::countEvent(CallHist::Event::WorkItem);
 	thread->doWork();
 };
 

@@ -33,6 +33,7 @@
 #include <cstring>
 #include <utility>
 #include <rtsig.h>
+#include <darlingserver/callhist.hpp>
 
 static DarlingServer::Log callLog("calls");
 
@@ -47,6 +48,7 @@ static constexpr size_t maxReplySize() {
 	#undef CALL_CASE
 	return max;
 }
+
 
 std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
@@ -90,6 +92,8 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 	}
 
 	#undef CALL_CASE
+
+	CallHist::countCall(header->number);
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
 		// A push, an S2C reply and an interrupt_exit only make sense from a thread that has made calls before (an

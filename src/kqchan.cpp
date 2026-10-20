@@ -1,5 +1,6 @@
 #include <darlingserver/kqchan.hpp>
 #include <darlingserver/server.hpp>
+#include <darlingserver/callhist.hpp>
 #include <darlingserver/rpc-supplement.h>
 #include <darlingserver/thread.hpp>
 #include <darlingserver/logging.hpp>
@@ -283,6 +284,7 @@ int DarlingServer::Kqchan::MachPort::setup() {
 
 void DarlingServer::Kqchan::MachPort::_processMessages() {
 	while (auto msg = _inbox.pop()) {
+		CallHist::countEvent(CallHist::Event::KqchanMessage);
 		if (msg->data().size() < sizeof(dserver_kqchan_callhdr_t)) {
 			throw std::invalid_argument("Message buffer was too small for kqchan call header");
 		}
@@ -509,6 +511,7 @@ int DarlingServer::Kqchan::Process::setup() {
 
 void DarlingServer::Kqchan::Process::_processMessages() {
 	while (auto msg = _inbox.pop()) {
+		CallHist::countEvent(CallHist::Event::KqchanMessage);
 		if (msg->data().size() < sizeof(dserver_kqchan_callhdr_t)) {
 			throw std::invalid_argument("Message buffer was too small for kqchan call header");
 		}
