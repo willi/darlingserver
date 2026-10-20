@@ -66,9 +66,11 @@ else()
 	)
 endif()
 
-# darlingserver's threads run at this nice value (0: unchanged). Every Mach call and trap of every Darling process waits
-# for it, as on XNU a call runs in the caller's own context and never queues behind other user threads; it only runs on
-# behalf of its callers, so it can't take the CPU from the desktop on its own.
+# darlingserver's threads run at this nice value (absolute; 0: unchanged). Every Mach call and trap of every Darling
+# process waits for darlingserver, whereas on XNU a call runs in the caller's own context. At -10 it runs ahead of the
+# other threads in its CPU group (in a container: Darling's own processes, its callers), so a call doesn't queue behind
+# the work of the processes waiting for it. Load outside that group is weighed by the group's weight, not by nice. It
+# only runs on behalf of its callers, so it can't take CPU on its own.
 set(DSERVER_NICE "-10" CACHE STRING "Nice value for darlingserver's threads (0 leaves it unchanged)")
 
 option(DSERVER_SINGLE_THREADED "Only use a single thread per workqueue in darlingserver" ON)
