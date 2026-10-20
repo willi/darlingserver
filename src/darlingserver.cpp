@@ -731,6 +731,14 @@ int main(int argc, char** argv) {
 	// this is the parent
 	close(childWaitFDs[0]);
 
+	// raise our priority while we're still root (it takes CAP_SYS_NICE, or an RLIMIT_NICE of at least 20 - DSERVER_NICE).
+	// On Linux this sets this thread's nice value, and every thread made after it inherits it: the Server's workers,
+	// below. launchd, cloned above, and every process it starts keep the nice value we started with. Without either
+	// (a container whose capabilities lack SYS_NICE, rootless or userns-remapped included) we keep running at that value.
+	if (DSERVER_NICE != 0 && setpriority(PRIO_PROCESS, 0, DSERVER_NICE) != 0) {
+		fprintf(stderr, "Warning: failed to set darlingserver's nice value to %d: %s\n", DSERVER_NICE, strerror(errno));
+	}
+
 	// drop our privileges. For good: Message reads its credentials once, when the first one is made (in the Server, below),
 	// so none may be made before this, and darlingserver's credentials may not change after it.
 	perma_drop_privileges(originalUID, originalGID);

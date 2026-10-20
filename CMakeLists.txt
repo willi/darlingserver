@@ -70,6 +70,9 @@ if (DSERVER_OPTIMIZE AND NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES
 	add_compile_options(-O2 -gline-tables-only -fno-omit-frame-pointer)
 endif()
 
+# the nice value darlingserver's threads run at (absolute; 0 leaves it unchanged); src/darlingserver.cpp says how
+set(DSERVER_NICE "-10" CACHE STRING "Nice value for darlingserver's threads (0 leaves it unchanged)")
+
 option(DSERVER_SINGLE_THREADED "Only use a single thread per workqueue in darlingserver" ON)
 
 if (DSERVER_SINGLE_THREADED)
@@ -180,6 +183,10 @@ install(TARGETS darlingserver DESTINATION bin)
 #	"${DARLING_ROOT_RELATIVE_TO_SDK}/../../../src/darlingserver/include/darlingserver/rpc.h"
 #	"${CMAKE_BINARY_DIR}/${DARLING_SDK_RELATIVE_PATH}/usr/include/darlingserver/rpc.h"
 #)
+
+target_compile_definitions(darlingserver PRIVATE
+	DSERVER_NICE=${DSERVER_NICE}
+)
 
 if (NOT "${DARLINGSERVER_INIT_PROCESS}" STREQUAL "")
 	target_compile_definitions(darlingserver PRIVATE
