@@ -73,6 +73,14 @@ endif()
 # the nice value darlingserver's threads run at (absolute; 0 leaves it unchanged); src/darlingserver.cpp says how
 set(DSERVER_NICE "-10" CACHE STRING "Nice value for darlingserver's threads (0 leaves it unchanged)")
 
+option(DSERVER_CALL_HIST "Count darlingserver's calls by number; SIGUSR2 writes them to <prefix>/private/var/log/dserver-callhist.txt" OFF)
+
+if (DSERVER_CALL_HIST)
+	add_compile_definitions(
+		DSERVER_CALL_HIST=1
+	)
+endif()
+
 option(DSERVER_SINGLE_THREADED "Only use a single thread per workqueue in darlingserver" ON)
 
 if (DSERVER_SINGLE_THREADED)
