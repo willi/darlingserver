@@ -5,6 +5,16 @@ cmake_minimum_required(VERSION 3.13)
 option(DSERVER_TOOLS "Build darlingserver tools (for debugging)" OFF)
 option(DSERVER_ASAN "Build darlingserver with ASAN" OFF)
 option(DSERVER_UBSAN "Build darlingserver with UBSAN" OFF)
+option(DSERVER_OPTIMIZE "Build darlingserver and its duct-tape at -O2 when no CMAKE_BUILD_TYPE is set" ON)
+
+# Darling builds with no CMAKE_BUILD_TYPE by default, so with no -O flag at all: clang's -O0. darlingserver is the one
+# process every Mach call and trap of every Darling process goes through, so its cost per call is every caller's.
+# Measured under taffy (a sim os_log-sized xpc_pipe_simpleroutine benchmark, ABBA, -O0 against -O2 of the same
+# sources): darlingserver's CPU per run fell about 1.6x and a raw mach_msg send about 2x, and Darling's prefix tests
+# (run-all.sh, 39 tests) pass on both. The rest of Darling keeps the build's own flags.
+if (DSERVER_OPTIMIZE AND NOT CMAKE_BUILD_TYPE)
+	add_compile_options(-O2)
+endif()
 
 if (DSERVER_TOOLS)
 	add_subdirectory(tools)
