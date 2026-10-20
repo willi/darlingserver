@@ -149,6 +149,11 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, bool exec, uint32_t n
 	}
 
 	if (parent_task != NULL) {
+		// the parent's lock, as its uidgid and audit_session calls change these under it. Its creator runs on the main
+		// loop, in the process registry's factory with the registry lock held, where dtape_mutex_lock() spins until the
+		// lock is free: that ends because no holder of a task lock blocks while holding it (dtape_thread_dying(), thread.c),
+		// and none takes a registry lock. dtape_thread_create() already takes a task lock the same way, from the thread
+		// registry's factory.
 		task_lock(&parent_task->xnu_task);
 		task->xnu_task.sec_token = parent_task->xnu_task.sec_token;
 		task->xnu_task.audit_token = parent_task->xnu_task.audit_token;
