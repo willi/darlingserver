@@ -1117,14 +1117,15 @@ void DarlingServer::Call::ConsoleOpen::processCall() {
 		// just report EMFILE for the peer
 		code = EMFILE;
 	} else {
-		// make our side non-blocking
+		// make our side non-blocking. Its errors are positive, as EMFILE above: the client (openat()'s /dev/console)
+		// fails the open with a positive code and takes a negative one for the RPC itself failing, and aborts
 		int flags = fcntl(sockets[0], F_GETFL);
 		if (flags < 0) {
-			code = -errno;
+			code = errno;
 		} else {
 			flags |= O_NONBLOCK;
 			if (fcntl(sockets[0], F_SETFL, flags) < 0) {
-				code = -errno;
+				code = errno;
 			} else {
 				// now monitor it
 				auto fd = std::make_shared<FD>(sockets[0]);
