@@ -86,12 +86,6 @@ namespace DarlingServer {
 		// one (an InterruptEnter, which doneWorking schedules).
 		static std::shared_ptr<Call> callFromMessage(Message&& requestMessage);
 
-#if DSERVER_CALL_HIST
-		// counts a received call by number; installHistogramDump() makes SIGUSR2 write the counts under `prefix`
-		static void countCall(uint32_t number);
-		static void installHistogramDump(const std::string& prefix);
-#endif
-
 		// callFromMessage for the main loop: a call that breaks the protocol is logged and dropped
 		static std::shared_ptr<Call> dispatchMessage(Message&& requestMessage);
 

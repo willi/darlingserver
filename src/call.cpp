@@ -33,11 +33,7 @@
 #include <cstring>
 #include <utility>
 #include <rtsig.h>
-#if DSERVER_CALL_HIST
-#include <atomic>
-#include <csignal>
-#include <unistd.h>
-#endif
+#include <darlingserver/callhist.hpp>
 
 static DarlingServer::Log callLog("calls");
 
@@ -53,76 +49,6 @@ static constexpr size_t maxReplySize() {
 	return max;
 }
 
-#if DSERVER_CALL_HIST
-// DSERVER_CALL_HIST: how many of each call darlingserver has received since it started, written on SIGUSR2 to
-// <prefix>/private/var/log/dserver-callhist.txt as "count number name" lines (the file is rewritten each time). A
-// counter per call number (without the unmanaged flag; the numbers are small and dense), and one each for an S2C reply
-// and a push_reply. The handler only reads lock-free atomics and makes async-signal-safe calls.
-namespace {
-	constexpr size_t histSlots = 1024;
-	std::atomic<uint64_t> callHist[histSlots + 2];
-	char histPath[4096];
-
-	size_t histSlot(uint32_t number) {
-		if (number == dserver_callnum_s2c) {
-			return histSlots;
-		} else if (number == dserver_callnum_push_reply) {
-			return histSlots + 1;
-		}
-		uint32_t index = number & ~DSERVER_CALL_UNMANAGED_FLAG;
-		return (index < histSlots) ? index : 0;
-	}
-
-	void histWrite(int fd, const char* s) {
-		write(fd, s, strlen(s));
-	}
-
-	void histWriteNumber(int fd, uint64_t value) {
-		char buf[24];
-		size_t i = sizeof(buf);
-		do {
-			buf[--i] = '0' + (value % 10);
-			value /= 10;
-		} while (value != 0);
-		write(fd, buf + i, sizeof(buf) - i);
-	}
-
-	void histDump(int) {
-		int savedErrno = errno;
-		int fd = open(histPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
-		if (fd >= 0) {
-			for (size_t i = 0; i < histSlots + 2; ++i) {
-				uint64_t count = callHist[i].load(std::memory_order_relaxed);
-				if (count == 0) {
-					continue;
-				}
-				uint32_t number = (i == histSlots) ? dserver_callnum_s2c : (i == histSlots + 1) ? dserver_callnum_push_reply : i;
-				histWriteNumber(fd, count);
-				histWrite(fd, " ");
-				histWriteNumber(fd, number);
-				histWrite(fd, " ");
-				histWrite(fd, (i == 0) ? "(out of range)" : dserver_callnum_to_string(static_cast<dserver_callnum_t>(number)));
-				histWrite(fd, "\n");
-			}
-			close(fd);
-		}
-		errno = savedErrno;
-	}
-};
-
-void DarlingServer::Call::countCall(uint32_t number) {
-	callHist[histSlot(number)].fetch_add(1, std::memory_order_relaxed);
-};
-
-void DarlingServer::Call::installHistogramDump(const std::string& prefix) {
-	snprintf(histPath, sizeof(histPath), "%s/private/var/log/dserver-callhist.txt", prefix.c_str());
-	struct sigaction action {};
-	action.sa_handler = histDump;
-	action.sa_flags = SA_RESTART;
-	sigemptyset(&action.sa_mask);
-	sigaction(SIGUSR2, &action, NULL);
-};
-#endif
 
 std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Message&& requestMessage) {
 	if (requestMessage.data().size() < sizeof(dserver_rpc_callhdr_t)) {
@@ -167,9 +93,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 
 	#undef CALL_CASE
 
-#if DSERVER_CALL_HIST
-	countCall(header->number);
-#endif
+	CallHist::countCall(header->number);
 
 	if ((header->number & DSERVER_CALL_UNMANAGED_FLAG) == 0) {
 		// A push, an S2C reply and an interrupt_exit only make sense from a thread that has made calls before (an

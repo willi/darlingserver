@@ -73,11 +73,15 @@ endif()
 # the nice value darlingserver's threads run at (absolute; 0 leaves it unchanged); src/darlingserver.cpp says how
 set(DSERVER_NICE "-10" CACHE STRING "Nice value for darlingserver's threads (0 leaves it unchanged)")
 
-option(DSERVER_CALL_HIST "Count darlingserver's calls by number; SIGUSR2 writes them to <prefix>/private/var/log/dserver-callhist.txt" OFF)
+option(DSERVER_CALL_HIST "Count darlingserver's calls by number and what wakes it; SIGUSR2 writes them to <prefix>/private/var/log/dserver-callhist.txt (without this, SIGUSR2 ends darlingserver)" OFF)
 
 if (DSERVER_CALL_HIST)
 	add_compile_definitions(
 		DSERVER_CALL_HIST=1
+	)
+else()
+	add_compile_definitions(
+		DSERVER_CALL_HIST=0
 	)
 endif()
 
@@ -135,6 +139,7 @@ add_executable(darlingserver
 	src/server.cpp
 	src/message.cpp
 	src/call.cpp
+	src/callhist.cpp
 	src/registry.cpp
 	src/logging.cpp
 	src/process.cpp

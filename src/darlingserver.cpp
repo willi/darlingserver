@@ -42,7 +42,7 @@
 #include <darling-config.h>
 
 #include <darlingserver/server.hpp>
-#include <darlingserver/call.hpp>
+#include <darlingserver/callhist.hpp>
 #include <darlingserver/config.hpp>
 
 #ifndef DARLINGSERVER_INIT_PROCESS
@@ -757,9 +757,7 @@ int main(int argc, char** argv) {
 	// create the server
 	auto server = new DarlingServer::Server(prefix);
 
-#if DSERVER_CALL_HIST
-	DarlingServer::Call::installHistogramDump(prefix);
-#endif
+	DarlingServer::CallHist::installDump(prefix);
 
 	// tell the child to go ahead; the socket has been created
 	write(childWaitFDs[1], ".", 1);
