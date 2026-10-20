@@ -21,6 +21,8 @@
 #include <ipc/ipc_object.h>
 #include <ipc/ipc_port.h>
 
+// sys/ucred.h (through sys/param.h) needs struct au_session, which bsm/audit.h defines after it includes sys/param.h
+#include <sys/param.h>
 #include <bsm/audit.h>
 #include <sys/errno.h>
 
