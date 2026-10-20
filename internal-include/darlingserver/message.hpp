@@ -167,6 +167,8 @@ namespace DarlingServer {
 		std::vector<Message> _receiveSlots;
 		size_t _receiveWidth;
 
+		bool _sendManyLocked(int socket);
+
 	public:
 		/**
 		 * `receiveWidth` is how many messages receiveMany() takes in one recvmmsg() (1 to 16): as many as the socket's
@@ -177,6 +179,13 @@ namespace DarlingServer {
 		void setMessageArrivalNotificationCallback(std::function<void()> messageArrivalNotificationCallback);
 
 		void push(Message&& message);
+		/**
+		 * push(), but if nothing is queued ahead of the message, it's sent now, from the caller, under the queue's lock.
+		 * Order is kept against sendMany(), which holds the same lock through its send. The socket must be non-blocking
+		 * and message-oriented (datagram or seqpacket, as sendMany() needs too), so a send takes a whole message or none:
+		 * on EAGAIN the message stays queued and the arrival callback runs, as for push().
+		 */
+		void pushOrSend(Message&& message, int socket);
 		std::optional<Message> pop();
 
 		bool sendMany(int socket);

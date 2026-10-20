@@ -510,8 +510,33 @@ std::optional<DarlingServer::Message> DarlingServer::MessageQueue::pop() {
 };
 
 bool DarlingServer::MessageQueue::sendMany(int socket) {
-	bool canSendMore = true;
 	std::scoped_lock lock(_lock);
+	return _sendManyLocked(socket);
+};
+
+// the lock is held from the emptiness check through the send, so messages leave in the order they were pushed,
+// whichever thread sends them
+void DarlingServer::MessageQueue::pushOrSend(Message&& message, int socket) {
+	std::unique_lock lock(_lock);
+	bool wasEmpty = _messages.empty();
+	_messages.push_back(std::move(message));
+
+	if (wasEmpty) {
+		_sendManyLocked(socket);
+		if (_messages.empty()) {
+			return;
+		}
+	}
+
+	auto callback = _messageArrivalNotificationCallback;
+	lock.unlock();
+	if (callback) {
+		callback();
+	}
+};
+
+bool DarlingServer::MessageQueue::_sendManyLocked(int socket) {
+	bool canSendMore = true;
 	struct mmsghdr mmsgs[16];
 	size_t len = 0;
 	int ret = 0;
