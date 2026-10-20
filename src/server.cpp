@@ -839,5 +839,5 @@ std::shared_ptr<DarlingServer::FD> DarlingServer::Monitor::fd() const {
 };
 
 void DarlingServer::Server::sendMessage(Message&& message) {
-	_outbox.push(std::move(message));
+	_outbox.pushOrSend(std::move(message), _listenerSocket);
 };

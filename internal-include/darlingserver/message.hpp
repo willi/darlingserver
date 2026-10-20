@@ -167,6 +167,8 @@ namespace DarlingServer {
 		std::vector<Message> _receiveSlots;
 		size_t _receiveWidth;
 
+		bool _sendManyLocked(int socket);
+
 	public:
 		/**
 		 * `receiveWidth` is how many messages receiveMany() takes in one recvmmsg() (1 to 16): as many as the socket's
@@ -177,6 +179,7 @@ namespace DarlingServer {
 		void setMessageArrivalNotificationCallback(std::function<void()> messageArrivalNotificationCallback);
 
 		void push(Message&& message);
+		void pushOrSend(Message&& message, int socket);
 		std::optional<Message> pop();
 
 		bool sendMany(int socket);
