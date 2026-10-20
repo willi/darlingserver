@@ -34,7 +34,12 @@ static int next_pidversion;
 
 // XNU's audit sessions (bsd/security/audit/audit_session.c): one record per session ID, which setaudit_addr() checks a
 // change against. XNU forgets a session when its last process leaves it; these are kept, so an explicit asid of a dead
-// session still meets its old audit ID and terminal ID. Session IDs that the server assigns start where XNU's do,
+// session still meets its old audit ID and terminal ID.
+// Known divergence: XNU's members all point at one au_sentry, so a member that sets a session's still-unset audit ID
+// or terminal ID changes what every member sees. Here each task holds its own copy and only the record (and the
+// setter's copy) changes; other members keep the old values. Nothing does that today: simasuid sets the audit ID when
+// it creates the session, before the session has other members. A shared record per session (or a refresh of the
+// members) would be needed for audit_session_join(). Session IDs that the server assigns start where XNU's do,
 // at ASSIGNED_ASID_MIN = PID_MAX + 1 (audit_private.h).
 #define DTAPE_ASSIGNED_ASID_MIN 100000
 #define DTAPE_ASSIGNED_ASID_MAX (0xFFFFFFFFu - 1)
@@ -149,11 +154,15 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, bool exec, uint32_t n
 	}
 
 	if (parent_task != NULL) {
-		// the parent's lock, as its uidgid and audit_session calls change these under it. Its creator runs on the main
-		// loop, in the process registry's factory with the registry lock held, where dtape_mutex_lock() spins until the
-		// lock is free: that ends because no holder of a task lock blocks while holding it (dtape_thread_dying(), thread.c),
-		// and none takes a registry lock. dtape_thread_create() already takes a task lock the same way, from the thread
-		// registry's factory.
+		// the parent's lock, as its uidgid and audit_session calls change these under it. Two callers:
+		// - fork: the main loop, in the process registry's factory with the registry lock held, where dtape_mutex_lock()
+		//   spins until the lock is free. That ends because no task-lock holder waits on anything only the main loop can
+		//   deliver: it never takes a registry lock, nor waits for a message or event the main loop sends, directly or
+		//   through a lock it waits for (see dtape_thread_dying(), thread.c). A holder may wait on other dtape mutexes
+		//   (task_suspend()'s thread and port locks), which worker threads release. dtape_thread_create() takes a task
+		//   lock the same way, from the thread registry's factory.
+		// - exec: Process::_replaceTaskAfterExec(), on a microthread with the Process's _rwlock held, the order its S2C
+		//   semaphore destroys (dtape_semaphore_destroy() -> task_lock(owner)) already use.
 		task_lock(&parent_task->xnu_task);
 		task->xnu_task.sec_token = parent_task->xnu_task.sec_token;
 		task->xnu_task.audit_token = parent_task->xnu_task.audit_token;
@@ -311,26 +320,28 @@ int dtape_task_audit_session_set(dtape_task_t* task, dtape_audit_session_t* sess
 		return -EINVAL;
 	}
 
+	// one critical section from the superuser check to the task's new token, as XNU changes the credential in one step:
+	// a uidgid call can't drop root between the check and the change, and a fork can't copy the task half-way. The
+	// sessions lock is the outer one; nothing takes it with a task lock held.
+	dtape_mutex_lock(&audit_sessions_lock);
 	task_lock(&task->xnu_task);
-	bool is_root = task->xnu_task.audit_token.val[1] == 0;
-	task_unlock(&task->xnu_task);
-	if (!is_root) {
-		return -EPERM;
+	int ret = 0;
+	dtape_audit_session_record_t* record = NULL;
+	if (task->xnu_task.audit_token.val[1] != 0) {
+		ret = -EPERM;
+		goto out;
 	}
 
 	if (session->asid == AU_DEFAUDITSID) {
 		session->asid = AU_ASSIGN_ASID;
 	}
 
-	dtape_mutex_lock(&audit_sessions_lock);
-	dtape_audit_session_record_t* record = NULL;
 	if (session->asid != AU_ASSIGN_ASID) {
 		record = audit_session_lookup(session->asid);
 		if (record) {
-			int ret = audit_session_update_check(&record->session, session);
+			ret = audit_session_update_check(&record->session, session);
 			if (ret != 0) {
-				dtape_mutex_unlock(&audit_sessions_lock);
-				return ret;
+				goto out;
 			}
 		}
 	} else {
@@ -345,22 +356,23 @@ int dtape_task_audit_session_set(dtape_task_t* task, dtape_audit_session_t* sess
 	if (!record) {
 		record = malloc(sizeof(*record));
 		if (!record) {
-			dtape_mutex_unlock(&audit_sessions_lock);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto out;
 		}
 		record->next = audit_sessions;
 		audit_sessions = record;
 	}
 	record->session = *session;
-	dtape_mutex_unlock(&audit_sessions_lock);
 
 	// XNU's audit_session_setaia() then set_security_token(): the process's credential, then its task's token
-	task_lock(&task->xnu_task);
 	task->audit_session = *session;
 	task->xnu_task.audit_token.val[0] = session->auid;
 	task->xnu_task.audit_token.val[6] = (uint32_t)session->asid;
+
+out:
 	task_unlock(&task->xnu_task);
-	return 0;
+	dtape_mutex_unlock(&audit_sessions_lock);
+	return ret;
 };
 
 int dtape_task_set_special_port_for_spawn(dtape_task_t* task, int which, uint32_t name) {
@@ -664,7 +676,10 @@ kern_return_t task_info(task_t xtask, task_flavor_t flavor, task_info_t task_inf
 			}
 
 			audit_token_p = (audit_token_t *) task_info_out;
+			// under the task lock, as XNU's task_info(): the auid and asid change together (dtape_task_audit_session_set())
+			task_lock(xtask);
 			*audit_token_p = task->xnu_task.audit_token;
+			task_unlock(xtask);
 			*task_info_count = TASK_AUDIT_TOKEN_COUNT;
 
 			return KERN_SUCCESS;
