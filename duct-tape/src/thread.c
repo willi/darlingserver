@@ -140,7 +140,16 @@ void dtape_thread_destroy(dtape_thread_t* thread) {
 		}
 	}
 
-	while (thread->xnu_thread.wait_timer_active > 0);
+	// as XNU's thread_deallocate_complete() waits: with the thread unlocked, for thread_timer_expire() takes the lock
+	// to decrement the count, and re-reading the count each time (a plain `while (count > 0);` under the lock never
+	// lets the expiry finish, and at -O2 compiles to a load and an endless jump)
+	while (__atomic_load_n(&thread->xnu_thread.wait_timer_active, __ATOMIC_ACQUIRE) > 0) {
+		thread_unlock(&thread->xnu_thread);
+#if defined(__x86_64__) || defined(__i386__)
+		__builtin_ia32_pause();
+#endif
+		thread_lock(&thread->xnu_thread);
+	}
 
 	// pull the thread from any waitqs it might have been waiting on
 	thread->xnu_thread.state |= TH_TERMINATE;
