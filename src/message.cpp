@@ -514,11 +514,8 @@ bool DarlingServer::MessageQueue::sendMany(int socket) {
 	return _sendManyLocked(socket);
 };
 
-// push(), but a message with nothing queued ahead of it is sent now, from the calling thread, instead of waking the
-// queue's sending thread for it (darlingserver's epoll loop: one wakeup less per reply). The lock is held from the
-// emptiness check through the send, as sendMany() holds it through its own, so messages still leave in the order they
-// were pushed, whichever thread sends them. The socket is a datagram socket, so a send takes a whole message or none of
-// it: one it can't take now (EAGAIN) stays first in the queue, and the sending thread is woken for it as push() does.
+// the lock is held from the emptiness check through the send, so messages leave in the order they were pushed,
+// whichever thread sends them
 void DarlingServer::MessageQueue::pushOrSend(Message&& message, int socket) {
 	std::unique_lock lock(_lock);
 	bool wasEmpty = _messages.empty();
