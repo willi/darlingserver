@@ -873,7 +873,9 @@ static void kernelAsyncRunnerThreadWorker(bool permanent, std::shared_ptr<Darlin
 	} while (permanent);
 
 	self = nullptr;
-	DarlingServer::Thread::currentThread()->terminate();
+	// terminate() never returns, so this frame never ends: nothing on it may own the thread (a shared_ptr temporary, as
+	// currentThread()'s was, kept it and its stack for ever)
+	currentThreadVar->terminate();
 	__builtin_unreachable();
 };
 

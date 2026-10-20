@@ -57,7 +57,7 @@ void* DarlingServer::StackPool::_allocate(size_t stackSize, bool useGuardPages) 
 	}
 
 	if (stack == MAP_FAILED) {
-		throw std::system_error(errno, std::generic_category());
+		throw std::system_error(errno, std::generic_category(), "StackPool: mmap of a microthread stack");
 	}
 
 	if (useGuardPages) {
