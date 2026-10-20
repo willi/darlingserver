@@ -56,7 +56,11 @@ namespace DarlingServer {
 		using ID = typename Entry::ID;
 		using NSID = typename Entry::NSID;
 
-		std::shared_ptr<Entry> registerIfAbsent(NSID nsid, std::function<std::shared_ptr<Entry>()> entryFactory) {
+		// The factories below get the entry's eternal ID before they construct it, so everything the entry's constructor
+		// copies the ID into (its task's p_ident.eid and bank context) has the real one. An ID whose factory returns
+		// nothing is skipped; like XNU's p_uniqueid, the IDs needn't be dense.
+
+		std::shared_ptr<Entry> registerIfAbsent(NSID nsid, std::function<std::shared_ptr<Entry>(EternalID)> entryFactory) {
 			std::unique_lock lock(_rwlock);
 
 			auto it2 = _nsmap.find(nsid);
@@ -73,14 +77,12 @@ namespace DarlingServer {
 			std::shared_ptr<Entry> entry;
 			{
 				LockHeldFlag flag;
-				entry = entryFactory();
+				entry = entryFactory(_eternalCounter++);
 			}
 
 			if (!entry) {
 				return nullptr;
 			}
-
-			entry->_setEternalID(_eternalCounter++);
 
 			_map[entry->id()] = entry;
 			_nsmap[entry->nsid()] = entry;
@@ -89,19 +91,22 @@ namespace DarlingServer {
 			return entry;
 		};
 
-		bool registerEntry(std::shared_ptr<Entry> entry, bool replace = false) {
-			std::unique_lock lock(_rwlock);
-
-			if (!replace && (_map.find(entry->id()) != _map.end() || _nsmap.find(entry->nsid()) != _nsmap.end())) {
-				return false;
+		// Constructs and registers an entry, replacing any with its ID or NSID. The factory runs without the lock, as
+		// the kernel process's and kernel threads' constructors always have.
+		std::shared_ptr<Entry> registerNew(std::function<std::shared_ptr<Entry>(EternalID)> entryFactory) {
+			EternalID eid;
+			{
+				std::unique_lock lock(_rwlock);
+				eid = _eternalCounter++;
 			}
 
-			entry->_setEternalID(_eternalCounter++);
+			auto entry = entryFactory(eid);
 
+			std::unique_lock lock(_rwlock);
 			_map[entry->id()] = entry;
 			_nsmap[entry->nsid()] = entry;
 			_emap[entry->eternalID()] = entry;
-			return true;
+			return entry;
 		};
 
 		bool unregisterEntryByID(ID id) {

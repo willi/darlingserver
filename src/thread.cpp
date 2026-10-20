@@ -80,8 +80,9 @@ static DarlingServer::Log threadLog("thread");
 
 DarlingServer::StackPool DarlingServer::Thread::stackPool(IDLE_THREAD_STACK_COUNT, THREAD_STACK_SIZE, USE_THREAD_GUARD_PAGES);
 
-DarlingServer::Thread::Thread(std::shared_ptr<Process> process, NSID nsid, void* stackHint):
+DarlingServer::Thread::Thread(std::shared_ptr<Process> process, NSID nsid, EternalID eid, void* stackHint):
 	_nstid(nsid),
+	_eid(eid),
 	_process(process)
 {
 	_tid = -1;
@@ -186,8 +187,9 @@ DarlingServer::Thread::Thread(std::shared_ptr<Process> process, NSID nsid, void*
 	threadLog.info() << "New thread created with ID " << _tid << " and NSID " << _nstid << " for process with ID " << (process ? process->id() : -1) << " and NSID " << (process ? process->nsid() : -1);
 };
 
-DarlingServer::Thread::Thread(KernelThreadConstructorTag tag):
+DarlingServer::Thread::Thread(KernelThreadConstructorTag tag, EternalID eid):
 	_tid(-1),
+	_eid(eid),
 	_process(Process::kernelProcess())
 {
 	static uint64_t kernelThreadIDCounter = DTAPE_KERNEL_THREAD_ID_THRESHOLD;
@@ -249,10 +251,6 @@ DarlingServer::Thread::NSID DarlingServer::Thread::nsid() const {
 
 DarlingServer::EternalID DarlingServer::Thread::eternalID() const {
 	return _eid;
-};
-
-void DarlingServer::Thread::_setEternalID(EternalID eid) {
-	_eid = eid;
 };
 
 std::shared_ptr<DarlingServer::Process> DarlingServer::Thread::process() const {

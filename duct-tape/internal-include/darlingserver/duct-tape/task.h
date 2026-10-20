@@ -39,7 +39,7 @@ static dtape_task_t* dtape_task_for_xnu_task(task_t xnu_task) {
 
 void dtape_task_init(void);
 
-// the bank context's copy of the process's unique ID (bank.c), for dtape_task_set_eternal_id()
+// the bank context's copy of the process's unique ID (bank.c), for the kernel task, whose ID comes after its context
 void dtape_bank_task_set_unique_pid(task_t task, uint64_t unique_pid);
 
 #endif // _DARLINGSERVER_DUCT_TAPE_TASK_H_
