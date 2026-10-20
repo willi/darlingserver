@@ -71,12 +71,12 @@ void dtape_task_init(void) {
 
 	dtape_mutex_init(&audit_sessions_lock);
 
-	if (!dtape_task_create(NULL, 0, NULL, arch)) {
+	if (!dtape_task_create(NULL, false, 0, NULL, arch)) {
 		panic("Failed to create kernel task");
 	}
 };
 
-dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* context, dserver_rpc_architecture_t architecture) {
+dtape_task_t* dtape_task_create(dtape_task_t* parent_task, bool exec, uint32_t nsid, void* context, dserver_rpc_architecture_t architecture) {
 	if (parent_task == NULL && nsid == 0 && kernel_task) {
 		dtape_task_t* task = dtape_task_for_xnu_task(kernel_task);
 
@@ -89,6 +89,10 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 		} else {
 			task->context = context;
 		}
+		// dtape_task_init() made the kernel task before the kernel process existed: it takes the process's unique ID
+		// now (XNU's kernproc has 0), before any other task exists
+		task->p_ident.eid = dtape_hooks->task_eternal_id(context);
+		dtape_bank_task_set_unique_pid(&task->xnu_task, task->p_ident.eid);
 		return task;
 	}
 
@@ -105,12 +109,10 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	task->dyld_info_length = 0;
 	task->p_ident.eid = dtape_hooks->task_eternal_id(context);
 	// an exec replaces the task, but not the process, which keeps its parent
-	if (parent_task == NULL)
-		task->parent_eid = 0;
-	else if (parent_task->p_ident.eid == task->p_ident.eid)
+	if (exec)
 		task->parent_eid = parent_task->parent_eid;
 	else
-		task->parent_eid = parent_task->p_ident.eid;
+		task->parent_eid = parent_task ? parent_task->p_ident.eid : 0;
 	dtape_mutex_init(&task->dyld_info_lock);
 	dtape_condvar_init(&task->dyld_info_condvar);
 	memset(&task->xnu_task, 0, sizeof(task->xnu_task));
@@ -168,7 +170,8 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	// libxpc refuses to run with an audit token that lacks it.
 	task->xnu_task.audit_token.val[7] = __atomic_add_fetch(&next_pidversion, 1, __ATOMIC_RELAXED);
 
-	// like XNU's task_create_internal(): the bank context records the task's identity as of now
+	// like XNU's task_create_internal(): the bank context records the task's identity, all of it known by now (the
+	// unique ID came with the context; only the kernel task's comes later, in the branch above)
 	bank_task_initialize(&task->xnu_task);
 
 	if (architecture == dserver_rpc_architecture_x86_64 || architecture == dserver_rpc_architecture_arm64) {
@@ -230,13 +233,6 @@ void dtape_task_identity(dtape_task_t* task, uint64_t* unique_id, uint64_t* pare
 	*parent_unique_id = task->parent_eid;
 	*pidversion = task->xnu_task.audit_token.val[7];
 	task_unlock(&task->xnu_task);
-};
-
-void dtape_task_set_eternal_id(dtape_task_t* task, uint64_t eid) {
-	task_lock(&task->xnu_task);
-	task->p_ident.eid = eid;
-	task_unlock(&task->xnu_task);
-	dtape_bank_task_set_unique_pid(&task->xnu_task, eid);
 };
 
 void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_uid, int* old_gid) {
