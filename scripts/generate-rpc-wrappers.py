@@ -725,6 +725,36 @@ calls = [
 	], [
 		('retval', 'int32_t'),
 	]),
+
+	# the calling process's audit session (XNU's getaudit_addr()/setaudit_addr(), see dtape_task_audit_session_set()):
+	# with `set`, the given one replaces it (root only), then either way the current one is returned. The code is 0 or
+	# a negative Linux errno.
+	('audit_session', [
+		('set', 'bool'),
+		('auid', 'uint32_t'),
+		('mask_success', 'uint32_t'),
+		('mask_failure', 'uint32_t'),
+		('termid_port', 'uint32_t'),
+		('termid_type', 'uint32_t'),
+		('termid_addr0', 'uint32_t'),
+		('termid_addr1', 'uint32_t'),
+		('termid_addr2', 'uint32_t'),
+		('termid_addr3', 'uint32_t'),
+		('asid', 'int32_t'),
+		('flags', 'uint64_t'),
+	], [
+		('out_auid', 'uint32_t'),
+		('out_mask_success', 'uint32_t'),
+		('out_mask_failure', 'uint32_t'),
+		('out_termid_port', 'uint32_t'),
+		('out_termid_type', 'uint32_t'),
+		('out_termid_addr0', 'uint32_t'),
+		('out_termid_addr1', 'uint32_t'),
+		('out_termid_addr2', 'uint32_t'),
+		('out_termid_addr3', 'uint32_t'),
+		('out_asid', 'int32_t'),
+		('out_flags', 'uint64_t'),
+	]),
 ]
 
 ALLOWED_PRIVATE_TYPES = [

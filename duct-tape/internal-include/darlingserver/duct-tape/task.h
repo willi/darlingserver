@@ -4,6 +4,7 @@
 #include <kern/task.h>
 
 #include <darlingserver/rpc.h>
+#include <darlingserver/duct-tape.h>
 #include <darlingserver/duct-tape/condvar.h>
 #include <darlingserver/duct-tape/types.h>
 
@@ -26,6 +27,8 @@ struct dtape_task {
 	struct proc_ident p_ident;
 	// like XNU's p_puniqueid: the eternal ID of the process that forked this one
 	dtape_eternal_id_t parent_eid;
+	// the audit session; its auid and asid are also in xnu_task.audit_token (val[0], val[6]), under the task lock
+	dtape_audit_session_t audit_session;
 	struct task xnu_task;
 };
 

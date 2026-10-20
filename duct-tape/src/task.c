@@ -21,11 +21,35 @@
 #include <ipc/ipc_object.h>
 #include <ipc/ipc_port.h>
 
+#include <bsm/audit.h>
+#include <sys/errno.h>
+
 #include <stdlib.h>
 
 task_t kernel_task = NULL;
 
 static int next_pidversion;
+
+// XNU's audit sessions (bsd/security/audit/audit_session.c): one record per session ID, which setaudit_addr() checks a
+// change against. XNU forgets a session when its last process leaves it; these are kept, so an explicit asid of a dead
+// session still meets its old audit ID and terminal ID. Session IDs that the server assigns start where XNU's do,
+// at ASSIGNED_ASID_MIN = PID_MAX + 1 (audit_private.h).
+#define DTAPE_ASSIGNED_ASID_MIN 100000
+#define DTAPE_ASSIGNED_ASID_MAX (0xFFFFFFFFu - 1)
+typedef struct dtape_audit_session_record {
+	struct dtape_audit_session_record* next;
+	dtape_audit_session_t session;
+} dtape_audit_session_record_t;
+static dtape_mutex_t audit_sessions_lock;
+static dtape_audit_session_record_t* audit_sessions;
+static uint32_t audit_next_asid = DTAPE_ASSIGNED_ASID_MIN;
+
+// a process outside any session, as XNU's audit_default_aia: audit ID AU_DEFAUDITID, session AU_DEFAUDITSID
+static const dtape_audit_session_t audit_default_session = {
+	.auid = AU_DEFAUDITID,
+	.termid_type = AU_IPv4,
+	.asid = AU_DEFAUDITSID,
+};
 
 void dtape_task_init(void) {
 	// this will assign to kernel_task
@@ -42,6 +66,8 @@ void dtape_task_init(void) {
 #else
 	#error Unknown architecture
 #endif
+
+	dtape_mutex_init(&audit_sessions_lock);
 
 	if (!dtape_task_create(NULL, 0, NULL, arch)) {
 		panic("Failed to create kernel task");
@@ -119,11 +145,20 @@ dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* 
 	}
 
 	if (parent_task != NULL) {
+		task_lock(&parent_task->xnu_task);
 		task->xnu_task.sec_token = parent_task->xnu_task.sec_token;
 		task->xnu_task.audit_token = parent_task->xnu_task.audit_token;
+		task->audit_session = parent_task->audit_session;
+		task_unlock(&parent_task->xnu_task);
 	} else {
 		task->xnu_task.sec_token = KERNEL_SECURITY_TOKEN;
 		task->xnu_task.audit_token = KERNEL_AUDIT_TOKEN;
+		task->audit_session = audit_default_session;
+		// the kernel task keeps the kernel's all-zero token; a process with no parent here starts outside any session
+		if (nsid != 0) {
+			task->xnu_task.audit_token.val[0] = task->audit_session.auid;
+			task->xnu_task.audit_token.val[6] = task->audit_session.asid;
+		}
 	}
 
 	task->xnu_task.audit_token.val[5] = task->saved_pid;
@@ -210,13 +245,119 @@ void dtape_task_uidgid(dtape_task_t* task, int new_uid, int new_gid, int* old_ui
 	if (old_gid) {
 		*old_gid = task->xnu_task.audit_token.val[2];
 	}
+	// XNU's proc_calc_audit_token() and set_security_token(): effective ids in val[1]/val[2] and the security token,
+	// real ids in val[3]/val[4]. Darling has one id of each, so both are it.
 	if (new_uid >= 0) {
 		task->xnu_task.audit_token.val[1] = new_uid;
+		task->xnu_task.audit_token.val[3] = new_uid;
+		task->xnu_task.sec_token.val[0] = new_uid;
 	}
 	if (new_gid >= 0) {
 		task->xnu_task.audit_token.val[2] = new_gid;
+		task->xnu_task.audit_token.val[4] = new_gid;
+		task->xnu_task.sec_token.val[1] = new_gid;
 	}
 	task_unlock(&task->xnu_task);
+};
+
+void dtape_task_audit_session_get(dtape_task_t* task, dtape_audit_session_t* out) {
+	task_lock(&task->xnu_task);
+	*out = task->audit_session;
+	bool is_root = task->xnu_task.audit_token.val[1] == 0;
+	task_unlock(&task->xnu_task);
+
+	// XNU's getaudit_addr_internal(): only the superuser sees the real mask
+	if (!is_root) {
+		out->mask_success = ~0u;
+		out->mask_failure = ~0u;
+	}
+};
+
+static dtape_audit_session_record_t* audit_session_lookup(int32_t asid) {
+	for (dtape_audit_session_record_t* r = audit_sessions; r; r = r->next) {
+		if (r->session.asid == asid) {
+			return r;
+		}
+	}
+	return NULL;
+};
+
+// XNU's audit_session_update_check(): what an existing session lets a new member change. Its flag masks are sysctls
+// that default to 0, so no flag may change.
+static int audit_session_update_check(const dtape_audit_session_t* old, const dtape_audit_session_t* new) {
+	if (old->auid != AU_DEFAUDITID && old->auid != new->auid) {
+		return -EINVAL;
+	}
+	bool old_termid_set = old->termid_type != AU_IPv4 || old->termid_port != 0 || old->termid_addr[0] != 0;
+	if (old_termid_set && (old->termid_port != new->termid_port || old->termid_type != new->termid_type ||
+	    memcmp(old->termid_addr, new->termid_addr, sizeof(old->termid_addr)) != 0)) {
+		return -EINVAL;
+	}
+	if (old->flags != new->flags) {
+		return -EINVAL;
+	}
+	return 0;
+};
+
+int dtape_task_audit_session_set(dtape_task_t* task, dtape_audit_session_t* session) {
+	// XNU's setaudit_addr(): the terminal type and the ID range first, then the superuser check
+	if (session->termid_type != AU_IPv6 && session->termid_type != AU_IPv4) {
+		return -EINVAL;
+	}
+	if (session->asid != AU_ASSIGN_ASID && (uint32_t)session->asid > DTAPE_ASSIGNED_ASID_MAX) {
+		return -EINVAL;
+	}
+
+	task_lock(&task->xnu_task);
+	bool is_root = task->xnu_task.audit_token.val[1] == 0;
+	task_unlock(&task->xnu_task);
+	if (!is_root) {
+		return -EPERM;
+	}
+
+	if (session->asid == AU_DEFAUDITSID) {
+		session->asid = AU_ASSIGN_ASID;
+	}
+
+	dtape_mutex_lock(&audit_sessions_lock);
+	dtape_audit_session_record_t* record = NULL;
+	if (session->asid != AU_ASSIGN_ASID) {
+		record = audit_session_lookup(session->asid);
+		if (record) {
+			int ret = audit_session_update_check(&record->session, session);
+			if (ret != 0) {
+				dtape_mutex_unlock(&audit_sessions_lock);
+				return ret;
+			}
+		}
+	} else {
+		// XNU's audit_session_nextid(), skipping IDs in use, as audit_session_new() does
+		do {
+			if (audit_next_asid > DTAPE_ASSIGNED_ASID_MAX) {
+				audit_next_asid = DTAPE_ASSIGNED_ASID_MIN;
+			}
+			session->asid = (int32_t)audit_next_asid++;
+		} while (audit_session_lookup(session->asid));
+	}
+	if (!record) {
+		record = malloc(sizeof(*record));
+		if (!record) {
+			dtape_mutex_unlock(&audit_sessions_lock);
+			return -ENOMEM;
+		}
+		record->next = audit_sessions;
+		audit_sessions = record;
+	}
+	record->session = *session;
+	dtape_mutex_unlock(&audit_sessions_lock);
+
+	// XNU's audit_session_setaia() then set_security_token(): the process's credential, then its task's token
+	task_lock(&task->xnu_task);
+	task->audit_session = *session;
+	task->xnu_task.audit_token.val[0] = session->auid;
+	task->xnu_task.audit_token.val[6] = (uint32_t)session->asid;
+	task_unlock(&task->xnu_task);
+	return 0;
 };
 
 int dtape_task_set_special_port_for_spawn(dtape_task_t* task, int which, uint32_t name) {
