@@ -104,7 +104,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		}
 
 		// now let's lookup (and possibly create) the process and thread making this call
-		process = processRegistry().registerIfAbsent(header->pid, [&]() {
+		process = processRegistry().registerIfAbsent(header->pid, [&](EternalID eid) {
 			std::shared_ptr<Process> tmp = nullptr;
 
 			int lifetimePipe = -1;
@@ -118,7 +118,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			}
 
 			try {
-				tmp = std::make_shared<Process>(requestMessage.pid(), header->pid, static_cast<Process::Architecture>(header->architecture), lifetimePipe);
+				tmp = std::make_shared<Process>(requestMessage.pid(), header->pid, static_cast<Process::Architecture>(header->architecture), eid, lifetimePipe);
 			} catch (std::system_error e) {
 				return tmp;
 			}
@@ -139,7 +139,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 		}
 
 		bool registeredHere = false;
-		thread = threadRegistry().registerIfAbsent(header->tid, [&]() {
+		thread = threadRegistry().registerIfAbsent(header->tid, [&](EternalID eid) {
 			std::shared_ptr<Thread> tmp = nullptr;
 
 			void* stackHint = nullptr;
@@ -150,7 +150,7 @@ std::shared_ptr<DarlingServer::Call> DarlingServer::Call::callFromMessage(Messag
 			}
 
 			try {
-				tmp = std::make_shared<Thread>(process, header->tid, stackHint);
+				tmp = std::make_shared<Thread>(process, header->tid, eid, stackHint);
 			} catch (std::system_error e) {
 				return tmp;
 			}

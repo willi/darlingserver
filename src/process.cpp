@@ -33,9 +33,10 @@
 
 static DarlingServer::Log processLog("process");
 
-DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int pipe):
+DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, EternalID eid, int pipe):
 	_pid(id),
 	_nspid(nsid),
+	_eid(eid),
 	_architecture(architecture)
 {
 	int pidfd = (pipe >= 0) ? pipe : syscall(SYS_pidfd_open, _pid, 0);
@@ -89,15 +90,16 @@ DarlingServer::Process::Process(ID id, NSID nsid, Architecture architecture, int
 	}
 
 	// NOTE: see thread.cpp for why it's okay to use `this` here
-	_dtapeTask = dtape_task_create(parentProcess ? parentProcess->_dtapeTask : nullptr, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+	_dtapeTask = dtape_task_create(parentProcess ? parentProcess->_dtapeTask : nullptr, false, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
 	_dtapeForkWaitSemaphore = dtape_semaphore_create(_dtapeTask, 0);
 
 	processLog.info() << "New process created with ID " << _pid << " and NSID " << _nspid;
 };
 
-DarlingServer::Process::Process(KernelProcessConstructorTag tag):
+DarlingServer::Process::Process(KernelProcessConstructorTag tag, EternalID eid):
 	_pid(-1),
-	_nspid(0)
+	_nspid(0),
+	_eid(eid)
 {
 #if __x86_64__
 	_architecture = Architecture::x86_64;
@@ -110,7 +112,7 @@ DarlingServer::Process::Process(KernelProcessConstructorTag tag):
 #else
 	#error Unknown architecture
 #endif
-	_dtapeTask = dtape_task_create(nullptr, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+	_dtapeTask = dtape_task_create(nullptr, false, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
 };
 
 DarlingServer::Process::~Process() {
@@ -127,10 +129,6 @@ DarlingServer::Process::NSID DarlingServer::Process::nsid() const {
 
 DarlingServer::EternalID DarlingServer::Process::eternalID() const {
 	return _eid;
-};
-
-void DarlingServer::Process::_setEternalID(EternalID eid) {
-	_eid = eid;
 };
 
 std::vector<std::shared_ptr<DarlingServer::Thread>> DarlingServer::Process::threads() const {
@@ -185,9 +183,9 @@ std::shared_ptr<DarlingServer::Process> DarlingServer::Process::parentProcess() 
 
 std::shared_ptr<DarlingServer::Process> DarlingServer::Process::kernelProcess() {
 	static std::shared_ptr<Process> process = [&]() {
-		auto proc = std::make_shared<Process>(KernelProcessConstructorTag());
-		processRegistry().registerEntry(proc, true);
-		return proc;
+		return processRegistry().registerNew([](EternalID eid) {
+			return std::make_shared<Process>(KernelProcessConstructorTag(), eid);
+		});
 	}();
 	return process;
 };
@@ -351,7 +349,7 @@ void DarlingServer::Process::_replaceTaskAfterExec(std::unique_lock<std::shared_
 
 	// replace the old task with a new task that inherits from it
 	auto oldTask = _dtapeTask;
-	auto newTask = dtape_task_create(oldTask, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
+	auto newTask = dtape_task_create(oldTask, true, _nspid, this, static_cast<dserver_rpc_architecture_t>(_architecture));
 	_dtapeTask = newTask;
 
 	// now replace the main thread's duct-taped thread with a new one

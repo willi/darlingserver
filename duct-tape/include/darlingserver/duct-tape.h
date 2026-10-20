@@ -50,8 +50,12 @@ typedef void (*dtape_kqchan_mach_port_notification_callback_f)(void* context);
  * Creates a new duct-tape task. The caller receives a reference on the new task.
  *
  * An @p nsid value of `0` indicates the task being created is the kernel task.
+ *
+ * With @p exec, the new task replaces @p parent_task for the same process, which keeps its parent; otherwise
+ * @p parent_task (if any) is the new process's parent. The task copies the process's unique ID from @p context
+ * (the task_eternal_id hook), so the ID must exist by then.
  */
-dtape_task_t* dtape_task_create(dtape_task_t* parent_task, uint32_t nsid, void* context, dserver_rpc_architecture_t architecture);
+dtape_task_t* dtape_task_create(dtape_task_t* parent_task, bool exec, uint32_t nsid, void* context, dserver_rpc_architecture_t architecture);
 dtape_thread_t* dtape_thread_create(dtape_task_t* task, uint64_t nsid, void* context);
 dtape_kqchan_mach_port_t* dtape_kqchan_mach_port_create(dtape_task_t* owning_task, uint32_t port, uint64_t receive_buffer, uint64_t receive_buffer_size, uint64_t saved_filter_flags, dtape_kqchan_mach_port_notification_callback_f notification_callback, void* context);
 dtape_semaphore_t* dtape_semaphore_create(dtape_task_t* owning_task, int initial_value);

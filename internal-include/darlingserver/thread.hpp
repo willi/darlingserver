@@ -47,7 +47,6 @@ namespace DarlingServer {
 	class Thread: public std::enable_shared_from_this<Thread>, public Loggable {
 		friend class Process;
 		friend class Call; // HACK, see call.cpp
-		friend class Registry<Thread>;
 		friend class Server; // claimScheduling()
 
 	public:
@@ -77,7 +76,8 @@ namespace DarlingServer {
 
 		pid_t _tid;
 		pid_t _nstid;
-		EternalID _eid;
+		// from the registry; a kernel async runner, never registered, has none
+		const EternalID _eid;
 		std::shared_ptr<Process> _process;
 		std::shared_ptr<Call> _pendingCall;
 		Address _address;
@@ -160,7 +160,6 @@ namespace DarlingServer {
 
 		static StackPool stackPool;
 
-		void _setEternalID(EternalID eid);
 
 	public:
 		using ID = pid_t;
@@ -168,8 +167,8 @@ namespace DarlingServer {
 
 		struct KernelThreadConstructorTag {};
 
-		Thread(std::shared_ptr<Process> process, NSID nsid, void* stackHint = nullptr);
-		Thread(KernelThreadConstructorTag tag);
+		Thread(std::shared_ptr<Process> process, NSID nsid, EternalID eid, void* stackHint = nullptr);
+		Thread(KernelThreadConstructorTag tag, EternalID eid = EternalIDInvalid);
 		~Thread() noexcept(false);
 
 		void registerWithProcess();

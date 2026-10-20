@@ -150,9 +150,11 @@ struct DTapeHooks {
 	};
 
 	static dtape_thread_t* dtape_hook_thread_create_kernel(void) {
-		auto thread = std::make_shared<DarlingServer::Thread>(DarlingServer::Thread::KernelThreadConstructorTag());
-		thread->registerWithProcess();
-		DarlingServer::threadRegistry().registerEntry(thread, true);
+		auto thread = DarlingServer::threadRegistry().registerNew([](DarlingServer::EternalID eid) {
+			auto thread = std::make_shared<DarlingServer::Thread>(DarlingServer::Thread::KernelThreadConstructorTag(), eid);
+			thread->registerWithProcess();
+			return thread;
+		});
 		return thread->_dtapeThread;
 	};
 

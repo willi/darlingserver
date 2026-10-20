@@ -106,7 +106,8 @@ static bank_task_t bank_task_alloc_init(task_t task) {
 	queue_init(&bank_task->bt_accounts_to_pay);
 	queue_init(&bank_task->bt_accounts_to_charge);
 
-	// XNU's p_uniqueid never repeats while the system is up; neither do darlingserver's eternal IDs
+	// XNU's p_uniqueid never repeats while the system is up; neither do darlingserver's eternal IDs. The task has its
+	// process's by now, except the kernel task, which dtape_task_create() gives it later
 	bank_task->bt_unique_pid = dtask->p_ident.eid;
 	bank_task->bt_pid = dtask->saved_pid;
 	bank_task->bt_pidversion = task->audit_token.val[7];
@@ -128,6 +129,10 @@ void bank_task_initialize(task_t task) {
 	if (task->bank_context == BANK_TASK_NULL) {
 		panic("Failed to allocate a bank task");
 	}
+};
+
+void dtape_bank_task_set_unique_pid(task_t task, uint64_t unique_pid) {
+	get_bank_task_context(task)->bt_unique_pid = unique_pid;
 };
 
 void bank_task_destroy(task_t task) {
