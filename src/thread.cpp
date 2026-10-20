@@ -1109,7 +1109,7 @@ std::optional<DarlingServer::Message> DarlingServer::Thread::_s2cPerform(Message
 			s2cLog.debug() << *this << ": Sending S2C signal" << s2cLog.endLog;
 			usingInterrupt = true;
 			try {
-				sendSignal(LINUX_SIGRTMIN + 1);
+				sendSignal(SIGNAL_S2C);
 			} catch (...) {
 				lock.lock();
 				if (_s2cRequest == request) {

@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cstring>
 #include <utility>
+#include <rtsig.h>
 
 static DarlingServer::Log callLog("calls");
 
@@ -799,7 +800,9 @@ void DarlingServer::Call::PthreadKill::processCall() {
 void DarlingServer::Call::PthreadCanceled::processCall() {
 	int code = 0;
 
-	callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
+	// unused: since cancel-xnu, libsystem_kernel answers pthread_canceled from the thread's own flags
+	// (bsdthread/cancelable.h), and it always ships with this server. The call stays: the call list only grows.
+	callLog.warning() << __PRETTY_FUNCTION__ << ": unused since cancel-xnu (libsystem_kernel answers it)" << callLog.endLog;
 	code = -ENOSYS;
 
 	_sendReply(code);
@@ -808,11 +811,23 @@ void DarlingServer::Call::PthreadCanceled::processCall() {
 void DarlingServer::Call::PthreadMarkcancel::processCall() {
 	int code = 0;
 
-	if (auto targetThread = Thread::threadForPort(_body.thread_port)) {
-		callLog.warning() << "TODO: " << __PRETTY_FUNCTION__ << callLog.endLog;
-		code = -ENOSYS;
-	} else {
+	// XNU's __pthread_markcancel (xnu-7195.141.2 bsd/kern/kern_sig.c 992-1022) takes a thread of the caller's own task
+	// only (PORT_TO_THREAD_IN_CURRENT_TASK). The marking itself is the target's: its flags are in its own memory, so the
+	// signal's handler there sets them and interrupts the cancelable syscall it may be blocked in (libsystem_kernel's
+	// sigexc.c and bsdthread/cancelable.h). Lockstep, one way: a libsystem_kernel without that handler (before
+	// darling-xnu's cancel-xnu) takes the signal's default action, which ends the whole process at its first
+	// pthread_cancel. An older darlingserver with the new libsystem_kernel answers ENOSYS, as before. So this server
+	// never ships ahead of that libsystem_kernel.
+	auto targetThread = Thread::threadForPort(_body.thread_port);
+	auto thread = _thread.lock();
+	if (!targetThread || !thread || !thread->process() || targetThread->process() != thread->process()) {
 		code = -ESRCH;
+	} else {
+		try {
+			targetThread->sendSignal(SIGNAL_PTHREAD_CANCEL);
+		} catch (std::system_error e) {
+			code = -e.code().value();
+		}
 	}
 
 	_sendReply(code);
