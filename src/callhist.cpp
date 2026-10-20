@@ -21,6 +21,8 @@
 
 #if DSERVER_CALL_HIST
 #include <darlingserver/rpc.h>
+#include <darlingserver/logging.hpp>
+#include <filesystem>
 #include <atomic>
 #include <cerrno>
 #include <csignal>
@@ -29,7 +31,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-// A counter per call number (without the unmanaged flag; the numbers are small and dense), one each for an S2C reply
+// The counts are cumulative from darlingserver's start, so two dumps (say at launchd up and at home) can be diffed by
+// phase. A counter per call number (without the unmanaged flag; the numbers are small and dense), one each for an S2C reply
 // and a push_reply, and one per event. A message is counted once its number is valid, so calls rejected later (an
 // unknown thread, say) are counted too. The handler only reads lock-free atomics and makes async-signal-safe calls.
 namespace {
@@ -99,6 +102,7 @@ namespace {
 					continue;
 				}
 				uint32_t number = (i == callSlots) ? dserver_callnum_s2c : (i == callSlots + 1) ? dserver_callnum_push_reply : i;
+				// slot 0: a number past the table (none today: the calls are numbered densely from 1)
 				const char* name = (i == 0) ? "(out of range)" : dserver_callnum_to_string(static_cast<dserver_callnum_t>(number));
 				if (!name && i < callSlots) {
 					// an unmanaged call is named under its number with the flag (the slot has it masked off)
@@ -130,7 +134,14 @@ void DarlingServer::CallHist::countEvent(Event event) {
 };
 
 void DarlingServer::CallHist::installDump(const std::string& prefix) {
-	snprintf(histPath, sizeof(histPath), "%s/private/var/log/dserver-callhist.txt", prefix.c_str());
+	static DarlingServer::Log histLog("callhist");
+	std::error_code error;
+	std::filesystem::create_directories(prefix + "/private/var/log", error);
+	int n = snprintf(histPath, sizeof(histPath), "%s/private/var/log/dserver-callhist.txt", prefix.c_str());
+	if (n < 0 || static_cast<size_t>(n) >= sizeof(histPath)) {
+		histLog.error() << "prefix path too long for the call histogram; SIGUSR2 left at its default" << histLog.endLog;
+		return;
+	}
 	snprintf(histTmpPath, sizeof(histTmpPath), "%s.tmp", histPath);
 	struct sigaction action {};
 	action.sa_handler = histDump;
